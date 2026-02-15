@@ -79,6 +79,57 @@ async function getApproved() {
   return data.approved || [];
 }
 
+function hasAllScopes(have, need) {
+  const set = new Set(have || []);
+  return (need || []).every((s) => set.has(s));
+}
+
+function parseScope(scopeText) {
+  if (!scopeText || typeof scopeText !== "string") {
+    return [];
+  }
+  return scopeText.split(" ").map((s) => s.trim()).filter(Boolean);
+}
+
+async function shouldAutoApproveChallenge(serviceId, scopes) {
+  const sessions = await getSessions();
+  return sessions.some((s) => s.service_id === serviceId && hasAllScopes(parseScope(s.scope), scopes));
+}
+
+async function approveChallenge(challengeId) {
+  const challengeStatus = await fetchJson(`${GATEWAY_URL}/v1/auth/challenges/${challengeId}/status`);
+  if (challengeStatus.status !== "pending") {
+    throw new Error(`challenge_not_pending:${challengeStatus.status}`);
+  }
+  const pending = await getChallenges();
+  const current = pending.find((c) => c.challenge_id === challengeId);
+  if (!current) {
+    throw new Error("challenge_not_found_in_pending");
+  }
+
+  const sign = await fetchJson(`${WALLET_URL}/v1/wallets/sign`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-wallet-sign-secret": walletSignSecret
+    },
+    body: JSON.stringify({
+      did: walletDid,
+      challenge_id: challengeId,
+      nonce: current.nonce,
+      audience: current.client_id,
+      expires_at: current.expires_at
+    })
+  });
+  dlog(`approve signed challenge=${challengeId}`);
+
+  return fetchJson(`${GATEWAY_URL}/v1/wallet/challenges/${challengeId}/approve`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ did: walletDid, wallet_url: WALLET_URL, signature: sign.signature })
+  });
+}
+
 function openWindow() {
   if (!win) {
     win = new BrowserWindow({
@@ -137,6 +188,24 @@ function showApproveNotification(serviceId, scopes) {
   n.show();
 }
 
+function showAutoApprovedNotification(serviceId, scopes) {
+  const n = new Notification({
+    title: "MiID 자동 승인",
+    body: `${serviceId} ${scopes.join(", ")} 자동 승인됨`
+  });
+  n.on("click", () => openWindow());
+  n.show();
+}
+
+function showReusedLoginNotification(serviceId, scopes) {
+  const n = new Notification({
+    title: "MiID 로그인",
+    body: `${serviceId} 로그인 재사용 (${scopes.join(", ")})`
+  });
+  n.on("click", () => openWindow());
+  n.show();
+}
+
 function connectEventStream() {
   if (!walletDid) {
     return;
@@ -146,12 +215,33 @@ function connectEventStream() {
   }
   dlog(`connect wallet event stream did=${walletDid}`);
   eventSource = new EventSource(`${GATEWAY_URL}/v1/wallet/events?did=${encodeURIComponent(walletDid)}`);
-  const forward = (event) => {
+  const forward = async (event) => {
     try {
       const data = JSON.parse(event.data);
       if (data.type === "challenge_created") {
-        dlog(`event challenge_created service=${data.payload.service_id}`);
-        showApproveNotification(data.payload.service_id, data.payload.scopes || []);
+        const serviceId = data.payload.service_id;
+        const scopes = data.payload.scopes || [];
+        const challengeId = data.payload.challenge_id;
+        dlog(`event challenge_created service=${serviceId} challenge=${challengeId}`);
+        const autoApprove = await shouldAutoApproveChallenge(serviceId, scopes);
+        if (autoApprove) {
+          dlog(`auto-approve start challenge=${challengeId}`);
+          showAutoApprovedNotification(serviceId, scopes);
+          try {
+            await approveChallenge(challengeId);
+            dlog(`auto-approve success challenge=${challengeId}`);
+          } catch (err) {
+            dlog(`auto-approve failed challenge=${challengeId} err=${err.message}`);
+            showApproveNotification(serviceId, scopes);
+          }
+        } else {
+          showApproveNotification(serviceId, scopes);
+        }
+      } else if (data.type === "login_reused") {
+        const serviceId = data.payload.service_id;
+        const scopes = data.payload.scopes || [];
+        dlog(`event login_reused service=${serviceId}`);
+        showReusedLoginNotification(serviceId, scopes);
       }
       if (win && !win.isDestroyed()) {
         win.webContents.send("challenge:event", data);
@@ -166,6 +256,7 @@ function connectEventStream() {
   eventSource.addEventListener("session_created", forward);
   eventSource.addEventListener("session_revoked", forward);
   eventSource.addEventListener("approved_cancelled", forward);
+  eventSource.addEventListener("login_reused", forward);
   eventSource.onerror = () => {
     dlog("wallet event stream error (auto-retry)");
     // EventSource handles retry internally.
@@ -262,37 +353,7 @@ ipcMain.handle("session:revoke", async (_event, sessionId) => {
 
 ipcMain.handle("challenge:approve", async (_event, challengeId) => {
   dlog(`approve requested challenge=${challengeId}`);
-  const challengeStatus = await fetchJson(`${GATEWAY_URL}/v1/auth/challenges/${challengeId}/status`);
-  if (challengeStatus.status !== "pending") {
-    throw new Error(`challenge_not_pending:${challengeStatus.status}`);
-  }
-  const pending = await getChallenges();
-  const current = pending.find((c) => c.challenge_id === challengeId);
-  if (!current) {
-    throw new Error("challenge_not_found_in_pending");
-  }
-
-  const sign = await fetchJson(`${WALLET_URL}/v1/wallets/sign`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-wallet-sign-secret": walletSignSecret
-    },
-    body: JSON.stringify({
-      did: walletDid,
-      challenge_id: challengeId,
-      nonce: current.nonce,
-      audience: current.client_id,
-      expires_at: current.expires_at
-    })
-  });
-  dlog(`approve click challenge=${challengeId} signed`);
-
-  return fetchJson(`${GATEWAY_URL}/v1/wallet/challenges/${challengeId}/approve`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ did: walletDid, wallet_url: WALLET_URL, signature: sign.signature })
-  });
+  return approveChallenge(challengeId);
 });
 
 ipcMain.handle("challenge:deny", async (_event, challengeId) => {

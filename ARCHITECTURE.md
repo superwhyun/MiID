@@ -109,3 +109,7 @@ stateDiagram-v2
 - 브라우저는 `sid`만 유지, 민감 토큰은 서비스 백엔드 저장 권장
 - 현재 구현은 VC/VP 미사용 (DID 소유 증명 + 사용자 승인 기반)
 - `did:miid`는 데모용 로컬 방식이며 공인 DID resolver 검증은 아직 미적용
+
+## TODO
+
+- 서비스 식별자(`service_id`)를 향후 `service DID` 기반으로 전환 검토

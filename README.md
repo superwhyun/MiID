@@ -97,11 +97,16 @@ open dist/MiID-darwin-arm64/MiID.app
 환경변수로 변경 가능:
 - `WALLET_PORT`
 - `GATEWAY_PORT`
+- `SERVICE_ID` (gateway 등록 서비스 식별자, 기본 `service-test`)
+- `SERVICE_CLIENT_ID` (gateway 등록 클라이언트 ID, 기본 `web-client`)
+- `SERVICE_CLIENT_SECRET` (gateway 서비스 인증 시크릿, 기본 `dev-service-secret`)
+- `SERVICE_REDIRECT_URI` (허용 redirect uri, 기본 `https://service-test.local/callback`)
 
 ## 주요 API
 
 Gateway:
 - `POST /v1/auth/challenge`
+- `POST /v1/auth/reuse-session`
 - `POST /v1/auth/verify`
 - `POST /v1/token/exchange`
 - `POST /v1/consents`
@@ -118,6 +123,15 @@ Gateway:
 - `DELETE /v1/wallet/sessions/:sessionId`
 - `POST /v1/wallet/challenges/:challengeId/approve`
 - `POST /v1/wallet/challenges/:challengeId/deny`
+
+서비스 인증이 필요한 엔드포인트:
+- `POST /v1/auth/challenge`
+- `POST /v1/token/exchange`
+- `GET /v1/service/events?challenge_id=...`
+
+위 3개 호출 시 헤더 필요:
+- `X-Client-Id: <registered client id>`
+- `X-Client-Secret: <registered client secret>`
 
 Wallet:
 - `POST /v1/wallets`

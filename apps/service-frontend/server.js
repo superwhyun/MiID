@@ -136,7 +136,7 @@ const server = http.createServer((req, res) => {
 
   if (pathname.startsWith("/api/")) {
     const backendPath = pathname.replace("/api", "");
-    if (backendPath.startsWith("/auth/stream/")) {
+    if (backendPath.startsWith("/auth/stream/") || backendPath === "/session/stream") {
       proxySSE(req, res, backendPath);
       return;
     }

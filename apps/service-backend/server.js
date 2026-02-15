@@ -1,20 +1,26 @@
 const express = require("express");
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 const { EventSource } = require("eventsource");
 
 const PORT = Number(process.env.PORT || 15000);
 const GATEWAY_URL = process.env.GATEWAY_URL || "http://localhost:14000";
 const SERVICE_ID = process.env.SERVICE_ID || "service-test";
-const CLIENT_ID = process.env.CLIENT_ID || "web-client";
-const REDIRECT_URI = process.env.REDIRECT_URI || "https://service-test.local/callback";
+const CLIENT_ID = process.env.CLIENT_ID || process.env.SERVICE_CLIENT_ID || "web-client";
+const CLIENT_SECRET = process.env.CLIENT_SECRET || process.env.SERVICE_CLIENT_SECRET || "dev-service-secret";
+const REDIRECT_URI = process.env.REDIRECT_URI || process.env.SERVICE_REDIRECT_URI || "https://service-test.local/callback";
 const SESSION_MAX_AGE_MS = Number(process.env.SESSION_MAX_AGE_MS || 3600000);
 const AUTO_FINALIZE = process.env.SERVICE_AUTO_FINALIZE !== "0";
 const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
 
 const sessions = new Map();
+const gatewaySessionToLocalSid = new Map();
 const challengeStates = new Map();
 const challengeClients = new Map();
 const gatewayStreams = new Map();
+const sessionClients = new Map();
+let gatewaySessionEventSource = null;
 
 function dlog(message) {
   if (DEBUG_AUTH) {
@@ -30,6 +36,19 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function getDefaultDidHint() {
+  try {
+    const walletPath = path.join(__dirname, "..", "..", "data", "wallet.json");
+    if (!fs.existsSync(walletPath)) {
+      return null;
+    }
+    const parsed = JSON.parse(fs.readFileSync(walletPath, "utf8"));
+    return parsed.wallets && parsed.wallets[0] ? parsed.wallets[0].did : null;
+  } catch (_err) {
+    return null;
+  }
+}
+
 function createSession(userData) {
   const sid = generateSessionId();
   const session = {
@@ -39,6 +58,9 @@ function createSession(userData) {
     expiresAt: new Date(Date.now() + SESSION_MAX_AGE_MS).toISOString()
   };
   sessions.set(sid, session);
+  if (session.gatewaySessionId) {
+    gatewaySessionToLocalSid.set(session.gatewaySessionId, sid);
+  }
   return session;
 }
 
@@ -53,6 +75,10 @@ function getSession(sid) {
 }
 
 function deleteSession(sid) {
+  const current = sessions.get(sid);
+  if (current && current.gatewaySessionId) {
+    gatewaySessionToLocalSid.delete(current.gatewaySessionId);
+  }
   sessions.delete(sid);
 }
 
@@ -81,6 +107,19 @@ function emitChallengeEvent(challengeId, type, payload) {
   dlog(`emit challenge event challenge=${challengeId} type=${type}`);
 }
 
+function emitSessionEvent(sid, type, payload) {
+  const subs = sessionClients.get(sid);
+  if (!subs) {
+    return;
+  }
+  const body = JSON.stringify({ type, payload, at: nowIso() });
+  subs.forEach((res) => {
+    res.write(`event: ${type}\n`);
+    res.write(`data: ${body}\n\n`);
+  });
+  dlog(`emit session event sid=${sid} type=${type}`);
+}
+
 function setChallengeState(challengeId, patch) {
   const current = challengeStates.get(challengeId) || { challenge_id: challengeId };
   const next = { ...current, ...patch, updated_at: nowIso() };
@@ -91,7 +130,11 @@ function setChallengeState(challengeId, patch) {
 async function postJson(url, body) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Client-Id": CLIENT_ID,
+      "X-Client-Secret": CLIENT_SECRET
+    },
     body: JSON.stringify(body)
   });
   const data = await response.json().catch(() => ({ error: "invalid_json_response" }));
@@ -136,6 +179,7 @@ async function finalizeChallenge(challengeId, authorizationCode) {
     );
 
     const session = createSession({
+      gatewaySessionId: tokenData.session_id || null,
       accessToken: tokenData.access_token,
       refreshToken: tokenData.refresh_token,
       scope: tokenData.scope,
@@ -165,11 +209,66 @@ async function finalizeChallenge(challengeId, authorizationCode) {
   }
 }
 
+function startGatewaySessionEventStream() {
+  if (gatewaySessionEventSource) {
+    return;
+  }
+  const es = new EventSource(`${GATEWAY_URL}/v1/service/session-events`, {
+    fetch: (input, init) =>
+      fetch(input, {
+        ...init,
+        headers: {
+          ...(init?.headers || {}),
+          "X-Client-Id": CLIENT_ID,
+          "X-Client-Secret": CLIENT_SECRET
+        }
+      })
+  });
+  gatewaySessionEventSource = es;
+  dlog("gateway session stream open");
+
+  es.addEventListener("session_revoked", (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      const gatewaySessionId = data.payload?.session_id;
+      if (!gatewaySessionId) {
+        return;
+      }
+      const sid = gatewaySessionToLocalSid.get(gatewaySessionId);
+      if (!sid) {
+        return;
+      }
+      deleteSession(sid);
+      emitSessionEvent(sid, "force_logout", {
+        reason: "revoked",
+        session_id: gatewaySessionId
+      });
+      dlog(`force logout sid=${sid} gateway_session=${gatewaySessionId}`);
+    } catch (err) {
+      dlog(`session stream parse error: ${err.message}`);
+    }
+  });
+
+  es.onerror = () => {
+    dlog("gateway session stream error");
+  };
+}
+
 function startGatewayChallengeStream(challengeId) {
   if (gatewayStreams.has(challengeId)) {
     return;
   }
-  const es = new EventSource(`${GATEWAY_URL}/v1/service/events?challenge_id=${encodeURIComponent(challengeId)}`);
+  const es = new EventSource(`${GATEWAY_URL}/v1/service/events?challenge_id=${encodeURIComponent(challengeId)}`, {
+    fetch: (input, init) =>
+      fetch(input, {
+        ...init,
+        headers: {
+          ...(init?.headers || {}),
+          "X-Client-Id": CLIENT_ID,
+          "X-Client-Secret": CLIENT_SECRET
+        }
+      })
+  });
   gatewayStreams.set(challengeId, es);
   dlog(`gateway stream open challenge=${challengeId}`);
 
@@ -248,23 +347,73 @@ app.get("/health", (_req, res) => {
 app.post("/auth/start", async (req, res) => {
   try {
     const { did } = req.body || {};
+    const didHint = did || getDefaultDidHint() || null;
+    const requestedScopes = ["profile", "email"];
+
+    if (didHint) {
+      try {
+        const reused = await postJson(`${GATEWAY_URL}/v1/auth/reuse-session`, {
+          did: didHint,
+          scopes: requestedScopes
+        });
+        const profile = await getJson(
+          `${GATEWAY_URL}/v1/services/${encodeURIComponent(SERVICE_ID)}/profile`,
+          { Authorization: `Bearer ${reused.access_token}` }
+        );
+        const session = createSession({
+          gatewaySessionId: reused.session_id || null,
+          accessToken: reused.access_token,
+          refreshToken: reused.refresh_token,
+          scope: reused.scope || requestedScopes.join(" "),
+          profile
+        });
+        try {
+          await postJson(`${GATEWAY_URL}/v1/wallet/notify-reuse`, {
+            did: didHint,
+            scopes: requestedScopes
+          });
+        } catch (notifyErr) {
+          dlog(`reuse notify failed: ${notifyErr.message}`);
+        }
+        res.setHeader(
+          "Set-Cookie",
+          `sid=${session.sid}; HttpOnly; SameSite=Lax; Max-Age=${SESSION_MAX_AGE_MS / 1000}; Path=/`
+        );
+        dlog(`auth start reused active session sid=${session.sid} gateway_session=${reused.session_id}`);
+        return res.status(201).json({
+          status: "active",
+          reused: true,
+          session_id: session.sid,
+          profile
+        });
+      } catch (reuseErr) {
+        dlog(`auth start no reusable session: ${reuseErr.message}`);
+      }
+    }
+
     const challenge = await postJson(`${GATEWAY_URL}/v1/auth/challenge`, {
       service_id: SERVICE_ID,
       client_id: CLIENT_ID,
       redirect_uri: REDIRECT_URI,
-      scopes: ["profile", "email"],
-      did_hint: did || null,
+      scopes: requestedScopes,
+      did_hint: didHint,
       require_user_approval: true
     });
 
+    const normalizedStatus = challenge.status === "verified" ? "approved" : (challenge.status || "pending");
     const state = setChallengeState(challenge.challenge_id, {
-      status: "pending",
+      status: normalizedStatus,
       challenge_id: challenge.challenge_id,
       nonce: challenge.nonce,
-      expires_at: challenge.expires_at
+      expires_at: challenge.expires_at,
+      authorization_code: challenge.authorization_code || null
     });
 
-    startGatewayChallengeStream(challenge.challenge_id);
+    if (state.status === "pending") {
+      startGatewayChallengeStream(challenge.challenge_id);
+    } else if (state.status === "approved" && state.authorization_code && AUTO_FINALIZE) {
+      await finalizeChallenge(challenge.challenge_id, state.authorization_code);
+    }
     console.log(`[service-backend] auth start challenge=${challenge.challenge_id}`);
 
     return res.status(201).json({
@@ -315,6 +464,40 @@ app.get("/auth/stream/:challengeId", (req, res) => {
       challengeClients.delete(challengeId);
     }
     dlog(`frontend stream disconnected challenge=${challengeId}`);
+  });
+});
+
+app.get("/session/stream", (req, res) => {
+  if (!req.session) {
+    return res.status(401).json({ error: "not_authenticated" });
+  }
+  const sid = req.session.sid;
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders?.();
+  dlog(`frontend session stream connected sid=${sid}`);
+  res.write(`event: connected\n`);
+  res.write(`data: ${JSON.stringify({ sid, at: nowIso() })}\n\n`);
+
+  const subs = sessionClients.get(sid) || new Set();
+  subs.add(res);
+  sessionClients.set(sid, subs);
+  const keepAlive = setInterval(() => {
+    res.write(`event: ping\ndata: {}\n\n`);
+  }, 15000);
+
+  req.on("close", () => {
+    clearInterval(keepAlive);
+    const current = sessionClients.get(sid);
+    if (!current) {
+      return;
+    }
+    current.delete(res);
+    if (current.size === 0) {
+      sessionClients.delete(sid);
+    }
+    dlog(`frontend session stream disconnected sid=${sid}`);
   });
 });
 
@@ -397,5 +580,7 @@ app.listen(PORT, () => {
   console.log(`Auto finalize: ${AUTO_FINALIZE ? "on" : "off"}`);
   console.log(`Debug auth: ${DEBUG_AUTH ? "on" : "off"}`);
 });
+
+startGatewaySessionEventStream();
 
 module.exports = { app };

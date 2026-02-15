@@ -7,11 +7,45 @@ const PORT = process.env.GATEWAY_PORT || 14000;
 const DATA_DIR = path.join(__dirname, "..", "..", "data");
 const DATA_FILE = path.join(DATA_DIR, "gateway.json");
 const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
+const SERVICE_REGISTRY = parseServiceRegistry();
 
 function dlog(message) {
   if (DEBUG_AUTH) {
     console.log(`[gateway] ${message}`);
   }
+}
+
+function parseServiceRegistry() {
+  const clientId = process.env.SERVICE_CLIENT_ID || "web-client";
+  const serviceId = process.env.SERVICE_ID || "service-test";
+  const clientSecret = process.env.SERVICE_CLIENT_SECRET || "dev-service-secret";
+  const redirectUri = process.env.SERVICE_REDIRECT_URI || "https://service-test.local/callback";
+  return new Map([
+    [
+      clientId,
+      {
+        client_id: clientId,
+        service_id: serviceId,
+        client_secret: clientSecret,
+        redirect_uris: [redirectUri]
+      }
+    ]
+  ]);
+}
+
+function authenticateServiceClient(req, res) {
+  const clientId = req.headers["x-client-id"];
+  const clientSecret = req.headers["x-client-secret"];
+  if (!clientId || !clientSecret) {
+    res.status(401).json({ error: "service_client_auth_required" });
+    return null;
+  }
+  const service = SERVICE_REGISTRY.get(clientId);
+  if (!service || service.client_secret !== clientSecret) {
+    res.status(401).json({ error: "invalid_service_client_credentials" });
+    return null;
+  }
+  return service;
 }
 
 function ensureStore() {
@@ -71,6 +105,13 @@ function hashScopes(scopes) {
 function hasAllScopes(consentScopes, requestedScopes) {
   const set = new Set(consentScopes);
   return requestedScopes.every((s) => set.has(s));
+}
+
+function parseScopeText(scopeText) {
+  if (!scopeText || typeof scopeText !== "string") {
+    return [];
+  }
+  return scopeText.split(" ").map((s) => s.trim()).filter(Boolean);
 }
 
 function findOrCreateSubject(store, did, serviceId) {
@@ -175,6 +216,7 @@ const app = express();
 app.use(express.json());
 const walletStreams = new Map();
 const challengeStreams = new Map();
+const serviceSessionStreams = new Map();
 
 function addWalletStream(did, res) {
   const current = walletStreams.get(did) || new Set();
@@ -244,6 +286,35 @@ function broadcastWalletEvent(type, payload) {
   });
 }
 
+function addServiceSessionStream(serviceId, res) {
+  const current = serviceSessionStreams.get(serviceId) || new Set();
+  current.add(res);
+  serviceSessionStreams.set(serviceId, current);
+}
+
+function removeServiceSessionStream(serviceId, res) {
+  const current = serviceSessionStreams.get(serviceId);
+  if (!current) {
+    return;
+  }
+  current.delete(res);
+  if (current.size === 0) {
+    serviceSessionStreams.delete(serviceId);
+  }
+}
+
+function pushServiceSessionEvent(serviceId, type, payload) {
+  const current = serviceSessionStreams.get(serviceId);
+  if (!current) {
+    return;
+  }
+  const body = JSON.stringify({ type, payload, at: nowIso() });
+  current.forEach((res) => {
+    res.write(`event: ${type}\n`);
+    res.write(`data: ${body}\n\n`);
+  });
+}
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "gateway", now: nowIso() });
 });
@@ -272,6 +343,10 @@ app.get("/v1/wallet/events", (req, res) => {
 });
 
 app.get("/v1/service/events", (req, res) => {
+  const service = authenticateServiceClient(req, res);
+  if (!service) {
+    return;
+  }
   const challengeId = req.query.challenge_id;
   if (!challengeId) {
     return res.status(400).json({ error: "challenge_id_required" });
@@ -281,6 +356,9 @@ app.get("/v1/service/events", (req, res) => {
   const challenge = store.challenges.find((c) => c.id === challengeId);
   if (!challenge) {
     return res.status(404).json({ error: "challenge_not_found" });
+  }
+  if (challenge.client_id !== service.client_id) {
+    return res.status(403).json({ error: "challenge_client_mismatch" });
   }
 
   res.setHeader("Content-Type", "text/event-stream");
@@ -303,18 +381,55 @@ app.get("/v1/service/events", (req, res) => {
   });
 });
 
+app.get("/v1/service/session-events", (req, res) => {
+  const service = authenticateServiceClient(req, res);
+  if (!service) {
+    return;
+  }
+  const serviceId = service.service_id;
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders?.();
+  dlog(`service session events connected service_id=${serviceId}`);
+  res.write(`event: connected\n`);
+  res.write(`data: ${JSON.stringify({ service_id: serviceId, at: nowIso() })}\n\n`);
+  addServiceSessionStream(serviceId, res);
+  const keepAlive = setInterval(() => {
+    res.write(`event: ping\ndata: {}\n\n`);
+  }, 15000);
+  req.on("close", () => {
+    clearInterval(keepAlive);
+    removeServiceSessionStream(serviceId, res);
+    dlog(`service session events disconnected service_id=${serviceId}`);
+  });
+});
+
 app.post("/v1/auth/challenge", (req, res) => {
+  const service = authenticateServiceClient(req, res);
+  if (!service) {
+    return;
+  }
   const { service_id, client_id, redirect_uri, scopes, state, risk_action, did_hint, require_user_approval } = req.body || {};
-  if (!service_id || !client_id || !redirect_uri || !Array.isArray(scopes) || scopes.length === 0) {
+  if (!client_id || !redirect_uri || !Array.isArray(scopes) || scopes.length === 0) {
     return res.status(400).json({ error: "invalid_request" });
+  }
+  if (client_id !== service.client_id) {
+    return res.status(403).json({ error: "client_id_mismatch" });
+  }
+  if (service_id && service_id !== service.service_id) {
+    return res.status(403).json({ error: "service_id_mismatch" });
+  }
+  if (!service.redirect_uris.includes(redirect_uri)) {
+    return res.status(403).json({ error: "redirect_uri_not_allowed" });
   }
 
   const store = readStore();
   const challenge = {
     id: crypto.randomUUID(),
     nonce: randomToken(18),
-    service_id,
-    client_id,
+    service_id: service.service_id,
+    client_id: service.client_id,
     redirect_uri,
     scopes: [...new Set(scopes)],
     state: state || null,
@@ -330,8 +445,8 @@ app.post("/v1/auth/challenge", (req, res) => {
     created_at: nowIso()
   };
   store.challenges.push(challenge);
-  writeStore(store);
   dlog(`challenge created id=${challenge.id} did_hint=${challenge.did_hint || "none"} service=${challenge.service_id}`);
+  writeStore(store);
   const eventPayload = {
     challenge_id: challenge.id,
     service_id: challenge.service_id,
@@ -347,8 +462,62 @@ app.post("/v1/auth/challenge", (req, res) => {
   return res.status(201).json({
     challenge_id: challenge.id,
     nonce: challenge.nonce,
-    expires_at: challenge.expires_at
+    expires_at: challenge.expires_at,
+    status: challenge.status
   });
+});
+
+app.post("/v1/auth/reuse-session", (req, res) => {
+  const service = authenticateServiceClient(req, res);
+  if (!service) {
+    return;
+  }
+  const { did, scopes } = req.body || {};
+  if (!did || !Array.isArray(scopes) || scopes.length === 0) {
+    return res.status(400).json({ error: "invalid_request" });
+  }
+
+  const store = readStore();
+  const reusable = store.sessions.find(
+    (s) =>
+      s.service_id === service.service_id &&
+      s.did === did &&
+      !s.revoked_at &&
+      new Date(s.expires_at) > new Date() &&
+      hasAllScopes(parseScopeText(s.scope), scopes)
+  );
+  if (!reusable) {
+    return res.status(404).json({ error: "no_reusable_session" });
+  }
+  dlog(`reused session lookup hit did=${did} service=${service.service_id} session=${reusable.id}`);
+  return res.json({
+    reused: true,
+    session_id: reusable.id,
+    access_token: reusable.access_token,
+    refresh_token: reusable.refresh_token,
+    scope: reusable.scope,
+    expires_at: reusable.expires_at
+  });
+});
+
+app.post("/v1/wallet/notify-reuse", (req, res) => {
+  const service = authenticateServiceClient(req, res);
+  if (!service) {
+    return;
+  }
+  const { did, scopes } = req.body || {};
+  if (!did) {
+    return res.status(400).json({ error: "did_required" });
+  }
+  const payload = {
+    service_id: service.service_id,
+    scopes: Array.isArray(scopes) ? scopes : [],
+    reused: true,
+    at: nowIso()
+  };
+  pushWalletEvent(did, "login_reused", payload);
+  dlog(`wallet notified reused login did=${did} service=${service.service_id}`);
+  return res.json({ ok: true });
 });
 
 app.post("/v1/auth/verify", async (req, res) => {
@@ -570,6 +739,12 @@ app.delete("/v1/wallet/sessions/:sessionId", (req, res) => {
     session_id: session.id,
     service_id: session.service_id
   });
+  pushServiceSessionEvent(session.service_id, "session_revoked", {
+    session_id: session.id,
+    service_id: session.service_id,
+    subject_id: session.subject_id,
+    did: session.did
+  });
   return res.json({
     session_id: session.id,
     status: "revoked",
@@ -672,9 +847,19 @@ app.post("/v1/wallet/challenges/:challengeId/deny", (req, res) => {
 });
 
 app.post("/v1/token/exchange", (req, res) => {
+  const service = authenticateServiceClient(req, res);
+  if (!service) {
+    return;
+  }
   const { grant_type, code, client_id, redirect_uri } = req.body || {};
   if (grant_type !== "authorization_code" || !code || !client_id || !redirect_uri) {
     return res.status(400).json({ error: "invalid_request" });
+  }
+  if (client_id !== service.client_id) {
+    return res.status(403).json({ error: "client_id_mismatch" });
+  }
+  if (!service.redirect_uris.includes(redirect_uri)) {
+    return res.status(403).json({ error: "redirect_uri_not_allowed" });
   }
   dlog(`token exchange attempt code=${code} client=${client_id}`);
 
@@ -689,7 +874,11 @@ app.post("/v1/token/exchange", (req, res) => {
   if (new Date(authCode.expires_at) < new Date()) {
     return res.status(401).json({ error: "code_expired" });
   }
-  if (authCode.client_id !== client_id || authCode.redirect_uri !== redirect_uri) {
+  if (
+    authCode.client_id !== client_id ||
+    authCode.redirect_uri !== redirect_uri ||
+    authCode.service_id !== service.service_id
+  ) {
     return res.status(401).json({ error: "client_or_redirect_mismatch" });
   }
 
@@ -706,9 +895,35 @@ app.post("/v1/token/exchange", (req, res) => {
     }
   }
 
+  const riskLevel = authCode.risk_action ? "step_up" : "normal";
+  const existingSession = store.sessions.find(
+    (s) =>
+      s.service_id === authCode.service_id &&
+      s.subject_id === authCode.subject_id &&
+      s.scope === authCode.scopes.join(" ") &&
+      s.risk_level === riskLevel &&
+      !s.revoked_at &&
+      new Date(s.expires_at) > new Date()
+  );
+
+  if (existingSession) {
+    authCode.used_at = nowIso();
+    writeStore(store);
+    dlog(`token exchange reused session code=${code} session=${existingSession.id} did=${existingSession.did}`);
+    const expiresIn = Math.max(1, Math.floor((new Date(existingSession.expires_at).getTime() - Date.now()) / 1000));
+    return res.json({
+      session_id: existingSession.id,
+      access_token: existingSession.access_token,
+      token_type: "Bearer",
+      expires_in: expiresIn,
+      refresh_token: existingSession.refresh_token,
+      id_token: `id_${randomToken(24)}`,
+      scope: existingSession.scope
+    });
+  }
+
   const accessToken = `at_${randomToken(24)}`;
   const refreshToken = `rt_${randomToken(24)}`;
-  const riskLevel = authCode.risk_action ? "step_up" : "normal";
 
   const session = {
     id: crypto.randomUUID(),
@@ -733,8 +948,17 @@ app.post("/v1/token/exchange", (req, res) => {
     scope: session.scope,
     expires_at: session.expires_at
   });
+  pushServiceSessionEvent(session.service_id, "session_created", {
+    session_id: session.id,
+    service_id: session.service_id,
+    subject_id: session.subject_id,
+    did: session.did,
+    scope: session.scope,
+    expires_at: session.expires_at
+  });
 
   return res.json({
+    session_id: session.id,
     access_token: accessToken,
     token_type: "Bearer",
     expires_in: riskLevel === "step_up" ? 600 : 3600,
@@ -821,6 +1045,12 @@ app.delete("/v1/consents/:consentId", (req, res) => {
       pushWalletEvent(s.did, "session_revoked", {
         session_id: s.id,
         service_id: s.service_id
+      });
+      pushServiceSessionEvent(s.service_id, "session_revoked", {
+        session_id: s.id,
+        service_id: s.service_id,
+        subject_id: s.subject_id,
+        did: s.did
       });
     });
   writeStore(store);

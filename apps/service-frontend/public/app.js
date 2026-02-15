@@ -4,6 +4,7 @@
   const API_BASE = "/api";
   let currentChallengeId = null;
   let authStream = null;
+  let sessionStream = null;
 
   const screens = {
     login: document.getElementById("screen-login"),
@@ -85,6 +86,26 @@
     return result.profile;
   }
 
+  function bindSessionStream() {
+    if (sessionStream) {
+      sessionStream.close();
+      sessionStream = null;
+    }
+    sessionStream = new EventSource(`${API_BASE}/session/stream`);
+    sessionStream.addEventListener("force_logout", () => {
+      if (sessionStream) {
+        sessionStream.close();
+        sessionStream = null;
+      }
+      currentChallengeId = null;
+      elements.errorMessage.textContent = "세션이 Wallet에서 revoke 되어 로그아웃되었습니다.";
+      showScreen("error");
+    });
+    sessionStream.onerror = () => {
+      // keep default reconnect behavior
+    };
+  }
+
   function updateWaitingStatus(status) {
     elements.challengeStatus.textContent = status.charAt(0).toUpperCase() + status.slice(1);
     elements.challengeStatus.className = `value status-${status}`;
@@ -115,6 +136,7 @@
           elements.profileScope.textContent = profile.scope || "profile email";
           elements.profileRisk.textContent = profile.risk_level || "normal";
           showScreen("success");
+          bindSessionStream();
         } catch (err) {
           elements.errorMessage.textContent = `Complete login failed: ${err.message}`;
           showScreen("error");
@@ -149,6 +171,16 @@
 
     try {
       const result = await apiCall("POST", "/auth/start", {});
+      if (result.status === "active" && result.profile) {
+        elements.profileSubject.textContent = truncateId(result.profile.subject_id);
+        elements.profileDid.textContent = result.profile.did;
+        elements.profileService.textContent = result.profile.service_id;
+        elements.profileScope.textContent = result.profile.scope || "profile email";
+        elements.profileRisk.textContent = result.profile.risk_level || "normal";
+        showScreen("success");
+        bindSessionStream();
+        return;
+      }
       currentChallengeId = result.challenge_id;
       elements.challengeId.textContent = truncateId(result.challenge_id);
       elements.challengeExpires.textContent = formatTime(result.expires_at);
@@ -183,6 +215,10 @@
       authStream.close();
       authStream = null;
     }
+    if (sessionStream) {
+      sessionStream.close();
+      sessionStream = null;
+    }
     showScreen("login");
   }
 
@@ -191,6 +227,10 @@
     if (authStream) {
       authStream.close();
       authStream = null;
+    }
+    if (sessionStream) {
+      sessionStream.close();
+      sessionStream = null;
     }
     showScreen("login");
   }
@@ -204,6 +244,7 @@
       elements.profileScope.textContent = profile.scope || "profile email";
       elements.profileRisk.textContent = profile.risk_level || "normal";
       showScreen("success");
+      bindSessionStream();
     } catch (_err) {
       showScreen("login");
     }

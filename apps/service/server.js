@@ -8,6 +8,7 @@ const PORT = Number(process.env.SERVICE_PORT || 15000);
 const GATEWAY_URL = process.env.GATEWAY_URL || "http://localhost:14000";
 const SERVICE_ID = process.env.SERVICE_ID || "service-test";
 const CLIENT_ID = process.env.SERVICE_CLIENT_ID || "web-client";
+const CLIENT_SECRET = process.env.SERVICE_CLIENT_SECRET || "dev-service-secret";
 const REDIRECT_URI = process.env.SERVICE_REDIRECT_URI || "https://service-test.local/callback";
 
 const app = express();
@@ -37,7 +38,11 @@ function getDidFromWalletData() {
 async function postJson(url, body) {
   const res = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      "x-client-id": CLIENT_ID,
+      "x-client-secret": CLIENT_SECRET
+    },
     body: JSON.stringify(body)
   });
   const data = await res.json().catch(() => ({}));
@@ -105,7 +110,17 @@ async function finalizeLogin(requestId, authorizationCode) {
 }
 
 function watchChallenge(requestId, challengeId) {
-  const es = new EventSource(`${GATEWAY_URL}/v1/service/events?challenge_id=${encodeURIComponent(challengeId)}`);
+  const es = new EventSource(`${GATEWAY_URL}/v1/service/events?challenge_id=${encodeURIComponent(challengeId)}`, {
+    fetch: (input, init) =>
+      fetch(input, {
+        ...init,
+        headers: {
+          ...(init?.headers || {}),
+          "x-client-id": CLIENT_ID,
+          "x-client-secret": CLIENT_SECRET
+        }
+      })
+  });
   gatewayEventSources.set(requestId, es);
   saveRequest(requestId, { challenge_id: challengeId });
 
