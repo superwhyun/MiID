@@ -1,0 +1,129 @@
+YOLO mode is enabled. All tool calls will be automatically approved.
+Loaded cached credentials.
+YOLO mode is enabled. All tool calls will be automatically approved.
+MCP server 'serena': HTTP connection failed, attempting SSE fallback...
+MCP server 'serena': SSE fallback also failed.
+Error during discovery for MCP server 'serena': fetch failedAttempt 1 failed: You have exhausted your capacity on this model. Your quota will reset after 0s.. Retrying after 112.20508799999999ms...
+Attempt 2 failed: You have exhausted your capacity on this model. Your quota will reset after 2s.. Retrying after 2835.225176ms...
+Attempt 1 failed: You have exhausted your capacity on this model. Your quota will reset after 0s.. Retrying after 225.824569ms...
+Attempt 1 failed: You have exhausted your capacity on this model. Your quota will reset after 0s.. Retrying after 791.017194ms...
+Attempt 2 failed: You have exhausted your capacity on this model. Your quota will reset after 2s.. Retrying after 2721.156675ms...
+Attempt 1 failed: You have exhausted your capacity on this model. Your quota will reset after 0s.. Retrying after 993.8018ms...
+{
+  "session_id": "fbcad146-b19a-4102-981b-1d60460991b2",
+  "response": "DID 로그인 정책(최초동의/재동의/step-up/revoke)을 `.serena/memories/task-board.md`에 성공적으로 정리했습니다. 기존의 '사용자 플로우' 섹션을 '로그인 및 동의 정책(Login & Consent Policy)'으로 개편하고, 요청하신 각 정책의 발생 시점과 운영 방침을 구체화하여 추가했습니다.",
+  "stats": {
+    "models": {
+      "gemini-2.5-flash-lite": {
+        "api": {
+          "totalRequests": 3,
+          "totalErrors": 2,
+          "totalLatencyMs": 2737
+        },
+        "tokens": {
+          "input": 2792,
+          "prompt": 2792,
+          "candidates": 117,
+          "total": 3254,
+          "cached": 0,
+          "thoughts": 345,
+          "tool": 0
+        }
+      },
+      "gemini-3-flash-preview": {
+        "api": {
+          "totalRequests": 14,
+          "totalErrors": 4,
+          "totalLatencyMs": 51653
+        },
+        "tokens": {
+          "input": 35898,
+          "prompt": 180194,
+          "candidates": 1383,
+          "total": 183475,
+          "cached": 144296,
+          "thoughts": 1898,
+          "tool": 0
+        }
+      }
+    },
+    "tools": {
+      "totalCalls": 13,
+      "totalSuccess": 13,
+      "totalFail": 0,
+      "totalDurationMs": 805,
+      "totalDecisions": {
+        "accept": 0,
+        "reject": 0,
+        "modify": 0,
+        "auto_accept": 13
+      },
+      "byName": {
+        "search_file_content": {
+          "count": 5,
+          "success": 5,
+          "fail": 0,
+          "durationMs": 416,
+          "decisions": {
+            "accept": 0,
+            "reject": 0,
+            "modify": 0,
+            "auto_accept": 5
+          }
+        },
+        "read_file": {
+          "count": 4,
+          "success": 4,
+          "fail": 0,
+          "durationMs": 14,
+          "decisions": {
+            "accept": 0,
+            "reject": 0,
+            "modify": 0,
+            "auto_accept": 4
+          }
+        },
+        "list_directory": {
+          "count": 1,
+          "success": 1,
+          "fail": 0,
+          "durationMs": 2,
+          "decisions": {
+            "accept": 0,
+            "reject": 0,
+            "modify": 0,
+            "auto_accept": 1
+          }
+        },
+        "run_shell_command": {
+          "count": 2,
+          "success": 2,
+          "fail": 0,
+          "durationMs": 365,
+          "decisions": {
+            "accept": 0,
+            "reject": 0,
+            "modify": 0,
+            "auto_accept": 2
+          }
+        },
+        "replace": {
+          "count": 1,
+          "success": 1,
+          "fail": 0,
+          "durationMs": 8,
+          "decisions": {
+            "accept": 0,
+            "reject": 0,
+            "modify": 0,
+            "auto_accept": 1
+          }
+        }
+      }
+    },
+    "files": {
+      "totalLinesAdded": 28,
+      "totalLinesRemoved": 18
+    }
+  }
+}

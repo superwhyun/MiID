@@ -1,0 +1,6 @@
+{
+  "wallet_url": "http://localhost:17000",
+  "gateway_url": "http://localhost:14000",
+  "did": "did:miid:04fb6c05-320e-4d5e-b6a3-466a2abdaf38",
+  "updated_at": "2026-02-15T13:20:03.591Z"
+}

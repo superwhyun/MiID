@@ -1,0 +1,13 @@
+{
+  "wallets": [
+    {
+      "id": "04fb6c05-320e-4d5e-b6a3-466a2abdaf38",
+      "name": "alice",
+      "did": "did:miid:04fb6c05-320e-4d5e-b6a3-466a2abdaf38",
+      "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAhsMnOeuxBkP6UHcOl6q12A60srg8uyQOrn0Mpx5jxcE=\n-----END PUBLIC KEY-----\n",
+      "private_key_pem": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIO15GnFn2hIBan4TUk3ubmJbYzrx9cUd1c/ya7d0h5pR\n-----END PRIVATE KEY-----\n",
+      "created_at": "2026-02-15T10:19:52.491Z"
+    }
+  ],
+  "consents": []
+}

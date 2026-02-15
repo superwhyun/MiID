@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MiID Approvals</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f6f7fb;
+        color: #111827;
+      }
+      header {
+        padding: 14px 16px;
+        background: #111827;
+        color: white;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 16px;
+      }
+      header p {
+        margin: 6px 0 0;
+        font-size: 12px;
+        opacity: 0.9;
+      }
+      main {
+        padding: 12px;
+      }
+      h2 {
+        font-size: 13px;
+        margin: 12px 0 8px;
+        color: #374151;
+      }
+      .card {
+        background: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 12px;
+        margin-bottom: 10px;
+      }
+      .meta {
+        font-size: 12px;
+        color: #6b7280;
+        margin-top: 6px;
+      }
+      .actions {
+        margin-top: 10px;
+        display: flex;
+        gap: 8px;
+      }
+      button {
+        border: 0;
+        border-radius: 8px;
+        padding: 8px 10px;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      .approve {
+        background: #059669;
+        color: #fff;
+      }
+      .deny {
+        background: #ef4444;
+        color: #fff;
+      }
+      .revoke {
+        background: #111827;
+        color: #fff;
+      }
+      .cancel {
+        background: #374151;
+        color: #fff;
+      }
+      .empty {
+        color: #6b7280;
+        font-size: 13px;
+      }
+      #status {
+        font-size: 12px;
+        color: #4b5563;
+        margin-bottom: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>MiID Wallet Approvals</h1>
+      <p id="didLabel"></p>
+    </header>
+    <main>
+      <div id="status">Loading...</div>
+      <h2>Pending Requests</h2>
+      <div id="list"></div>
+      <h2>Approved (Waiting Service)</h2>
+      <div id="approved"></div>
+      <h2>Active Sessions</h2>
+      <div id="sessions"></div>
+    </main>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

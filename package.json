@@ -1,0 +1,29 @@
+{
+  "name": "miid",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "dev": "node scripts/dev.js",
+    "dev:desktop": "node scripts/dev-desktop.js",
+    "dev:desktop:hot": "node scripts/dev-desktop-hot.js",
+    "start:menubar": "electron apps/menubar/main.js",
+    "start:gateway": "node apps/gateway/server.js",
+    "start:wallet": "node apps/wallet/server.js",
+    "demo:flow": "bash scripts/demo-flow.sh",
+    "test:request": "bash scripts/test-auth-signup.sh",
+    "test:finalize": "bash scripts/test-finalize.sh",
+    "test:approval": "bash scripts/test-approval.sh",
+    "test:e2e": "npm run -s test:approval && npm run -s test:finalize",
+    "build:mac": "electron-packager . MiID --platform=darwin --arch=arm64 --overwrite --out=dist --app-bundle-id=com.miid.desktop --app-version=0.1.0 --prune=true --ignore='^/(data|docs|api|db|\\.agent|\\.serena|dist)'"
+  },
+  "dependencies": {
+    "eventsource": "^4.1.0",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@electron/packager": "^19.0.5",
+    "electron": "^40.4.1",
+    "oh-my-ag": "^1.21.1"
+  }
+}

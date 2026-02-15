@@ -1,0 +1,92 @@
+YOLO mode is enabled. All tool calls will be automatically approved.
+Loaded cached credentials.
+YOLO mode is enabled. All tool calls will be automatically approved.
+MCP server 'serena': HTTP connection failed, attempting SSE fallback...
+MCP server 'serena': SSE fallback also failed.
+Error during discovery for MCP server 'serena': fetch failedAttempt 1 failed: You have exhausted your capacity on this model. Your quota will reset after 0s.. Retrying after 4.002727ms...
+Attempt 2 failed: You have exhausted your capacity on this model.. Retrying after 10000ms...
+Attempt 1 failed: You have exhausted your capacity on this model. Your quota will reset after 0s.. Retrying after 565.0696389999999ms...
+Attempt 1 failed: You have exhausted your capacity on this model. Your quota will reset after 1s.. Retrying after 1147.2525190000001ms...
+Attempt 1 failed: You have exhausted your capacity on this model. Your quota will reset after 2s.. Retrying after 2170.008612ms...
+{
+  "session_id": "b963cc83-fd97-4375-9716-1d7d7641a38b",
+  "response": "`.serena/memories/orchestrator-session.md` 파일에 요청하신 보안 체크리스트 항목(리플레이, nonce TTL, audience, 키회전, revoke, 감사로그)을 추가하였습니다.",
+  "stats": {
+    "models": {
+      "gemini-2.5-flash-lite": {
+        "api": {
+          "totalRequests": 3,
+          "totalErrors": 2,
+          "totalLatencyMs": 2183
+        },
+        "tokens": {
+          "input": 2797,
+          "prompt": 2797,
+          "candidates": 69,
+          "total": 3084,
+          "cached": 0,
+          "thoughts": 218,
+          "tool": 0
+        }
+      },
+      "gemini-3-flash-preview": {
+        "api": {
+          "totalRequests": 7,
+          "totalErrors": 3,
+          "totalLatencyMs": 30821
+        },
+        "tokens": {
+          "input": 17339,
+          "prompt": 52799,
+          "candidates": 537,
+          "total": 55856,
+          "cached": 35460,
+          "thoughts": 2520,
+          "tool": 0
+        }
+      }
+    },
+    "tools": {
+      "totalCalls": 3,
+      "totalSuccess": 3,
+      "totalFail": 0,
+      "totalDurationMs": 10,
+      "totalDecisions": {
+        "accept": 0,
+        "reject": 0,
+        "modify": 0,
+        "auto_accept": 3
+      },
+      "byName": {
+        "read_file": {
+          "count": 2,
+          "success": 2,
+          "fail": 0,
+          "durationMs": 7,
+          "decisions": {
+            "accept": 0,
+            "reject": 0,
+            "modify": 0,
+            "auto_accept": 2
+          }
+        },
+        "replace": {
+          "count": 1,
+          "success": 1,
+          "fail": 0,
+          "durationMs": 3,
+          "decisions": {
+            "accept": 0,
+            "reject": 0,
+            "modify": 0,
+            "auto_accept": 1
+          }
+        }
+      }
+    },
+    "files": {
+      "totalLinesAdded": 8,
+      "totalLinesRemoved": 0
+    }
+  }
+}

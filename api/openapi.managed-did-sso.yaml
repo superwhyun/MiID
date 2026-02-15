@@ -1,0 +1,296 @@
+openapi: 3.1.0
+info:
+  title: Managed DID SSO API
+  version: 0.1.0
+  description: Minimal API set for consent-first DID login across microservices.
+servers:
+  - url: https://auth.example.com
+
+paths:
+  /v1/auth/challenge:
+    post:
+      summary: Create one-time challenge for DID authentication
+      operationId: createChallenge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChallengeRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChallengeResponse"
+
+  /v1/auth/verify:
+    post:
+      summary: Verify wallet signature and issue authorization code
+      operationId: verifyChallenge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyRequest"
+      responses:
+        "200":
+          description: Verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyResponse"
+        "401":
+          description: Verification failed
+
+  /v1/token/exchange:
+    post:
+      summary: Exchange authorization code for tokens
+      operationId: exchangeToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TokenExchangeRequest"
+      responses:
+        "200":
+          description: Token issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenExchangeResponse"
+        "400":
+          description: Invalid code
+
+  /v1/consents:
+    post:
+      summary: Create or update consent for service scopes
+      operationId: upsertConsent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConsentUpsertRequest"
+      responses:
+        "200":
+          description: Consent saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsentResponse"
+
+  /v1/consents/{consentId}:
+    get:
+      summary: Get consent by ID
+      operationId: getConsent
+      parameters:
+        - name: consentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Consent found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsentResponse"
+        "404":
+          description: Not found
+    delete:
+      summary: Revoke consent by ID
+      operationId: revokeConsent
+      parameters:
+        - name: consentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsentRevokeResponse"
+        "404":
+          description: Not found
+
+components:
+  schemas:
+    ChallengeRequest:
+      type: object
+      required: [service_id, client_id, redirect_uri, scopes]
+      properties:
+        service_id:
+          type: string
+        client_id:
+          type: string
+        redirect_uri:
+          type: string
+          format: uri
+        scopes:
+          type: array
+          items:
+            type: string
+        state:
+          type: string
+        risk_action:
+          type: string
+          description: Optional action name requiring step-up.
+
+    ChallengeResponse:
+      type: object
+      required: [challenge_id, nonce, expires_at]
+      properties:
+        challenge_id:
+          type: string
+          format: uuid
+        nonce:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+
+    VerifyRequest:
+      type: object
+      required: [challenge_id, did, signature]
+      properties:
+        challenge_id:
+          type: string
+          format: uuid
+        did:
+          type: string
+        signature:
+          type: string
+          description: Detached signature over nonce + audience + expiry.
+        wallet_kid:
+          type: string
+          description: Key id used by wallet.
+        vp_token:
+          type: string
+          description: Optional VP/VC token.
+
+    VerifyResponse:
+      type: object
+      required: [authorization_code, code_expires_at, subject_id, consent_required]
+      properties:
+        authorization_code:
+          type: string
+        code_expires_at:
+          type: string
+          format: date-time
+        subject_id:
+          type: string
+        consent_required:
+          type: boolean
+        missing_scopes:
+          type: array
+          items:
+            type: string
+
+    TokenExchangeRequest:
+      type: object
+      required: [grant_type, code, client_id, redirect_uri]
+      properties:
+        grant_type:
+          type: string
+          enum: [authorization_code]
+        code:
+          type: string
+        client_id:
+          type: string
+        client_secret:
+          type: string
+        redirect_uri:
+          type: string
+          format: uri
+
+    TokenExchangeResponse:
+      type: object
+      required: [access_token, token_type, expires_in, id_token]
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+        refresh_token:
+          type: string
+        id_token:
+          type: string
+        scope:
+          type: string
+
+    ConsentUpsertRequest:
+      type: object
+      required: [service_id, subject_id, scopes, purpose]
+      properties:
+        service_id:
+          type: string
+        subject_id:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        purpose:
+          type: string
+        ttl_days:
+          type: integer
+          minimum: 1
+
+    ConsentResponse:
+      type: object
+      required: [consent_id, service_id, subject_id, scopes, version, status, granted_at]
+      properties:
+        consent_id:
+          type: string
+          format: uuid
+        service_id:
+          type: string
+        subject_id:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        version:
+          type: integer
+        status:
+          type: string
+          enum: [active, revoked, expired]
+        granted_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    ConsentRevokeResponse:
+      type: object
+      required: [consent_id, status, revoked_at]
+      properties:
+        consent_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [revoked]
+        revoked_at:
+          type: string
+          format: date-time
