@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Runtime and local state
+data/
+dist/
+*.log
+
+# Tooling-generated local artifacts
+.agent/
+.serena/
+.vscode/
+
+# OS files
+.DS_Store
