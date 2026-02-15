@@ -12,6 +12,14 @@ function cleanupStaleMenubar() {
   }
 }
 
+function cleanupStaleGateway() {
+  try {
+    execSync("pkill -f 'apps/gateway/server.js'", { stdio: "ignore" });
+  } catch (_err) {
+    // no stale process
+  }
+}
+
 function run(name, command, args) {
   const child = spawn(command, args, {
     cwd: root,
@@ -28,6 +36,7 @@ function run(name, command, args) {
   return child;
 }
 
+cleanupStaleGateway();
 const gateway = run("gateway", "node", ["apps/gateway/server.js"]);
 cleanupStaleMenubar();
 const menubar = run("menubar", electronBin, ["apps/menubar/main.js"]);

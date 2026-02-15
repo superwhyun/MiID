@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MiID Service - DID Login</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Login Screen -->
+    <div id="screen-login" class="screen active">
+      <div class="card">
+        <div class="logo">
+          <div class="logo-icon">M</div>
+          <h1>MiID Service</h1>
+        </div>
+        <p class="subtitle">Decentralized Identity Authentication</p>
+
+        <p class="description">MiID Wallet 앱에서 로그인 요청을 승인하세요.</p>
+
+        <button id="btn-login" class="btn btn-primary">
+          <span class="btn-text">Login with MiID</span>
+          <span class="btn-loading hidden">
+            <span class="spinner"></span>
+            Starting...
+          </span>
+        </button>
+
+        <div id="login-error" class="error-message hidden"></div>
+      </div>
+    </div>
+
+    <!-- Waiting Screen -->
+    <div id="screen-waiting" class="screen">
+      <div class="card">
+        <div class="waiting-animation">
+          <div class="pulse-ring"></div>
+          <div class="pulse-ring delay-1"></div>
+          <div class="pulse-ring delay-2"></div>
+          <div class="waiting-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+            </svg>
+          </div>
+        </div>
+
+        <h2>Waiting for Approval</h2>
+        <p class="waiting-message">Please approve the login request in your MiID Wallet app.</p>
+
+        <div class="challenge-info">
+          <div class="info-row">
+            <span class="label">Challenge ID:</span>
+            <span id="challenge-id" class="value mono">-</span>
+          </div>
+          <div class="info-row">
+            <span class="label">Status:</span>
+            <span id="challenge-status" class="value status-pending">Pending</span>
+          </div>
+          <div class="info-row">
+            <span class="label">Expires:</span>
+            <span id="challenge-expires" class="value">-</span>
+          </div>
+        </div>
+
+        <div class="progress-bar">
+          <div id="progress-fill" class="progress-fill"></div>
+        </div>
+
+        <button id="btn-cancel" class="btn btn-secondary">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Success Screen -->
+    <div id="screen-success" class="screen">
+      <div class="card">
+        <div class="success-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+            <polyline points="22 4 12 14.01 9 11.01"/>
+          </svg>
+        </div>
+
+        <h2>Login Successful</h2>
+        <p class="success-message">You are now authenticated with DID.</p>
+
+        <div class="profile-card">
+          <div class="profile-header">
+            <div class="profile-avatar">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                <circle cx="12" cy="7" r="4"/>
+              </svg>
+            </div>
+            <div class="profile-info">
+              <h3 id="profile-subject">-</h3>
+              <p id="profile-did" class="mono">-</p>
+            </div>
+          </div>
+
+          <div class="profile-details">
+            <div class="detail-row">
+              <span class="label">Service ID:</span>
+              <span id="profile-service" class="value">-</span>
+            </div>
+            <div class="detail-row">
+              <span class="label">Scope:</span>
+              <span id="profile-scope" class="value">-</span>
+            </div>
+            <div class="detail-row">
+              <span class="label">Risk Level:</span>
+              <span id="profile-risk" class="value">-</span>
+            </div>
+          </div>
+        </div>
+
+        <button id="btn-logout" class="btn btn-danger">Logout</button>
+      </div>
+    </div>
+
+    <!-- Error Screen -->
+    <div id="screen-error" class="screen">
+      <div class="card">
+        <div class="error-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="15" y1="9" x2="9" y2="15"/>
+            <line x1="9" y1="9" x2="15" y2="15"/>
+          </svg>
+        </div>
+
+        <h2>Authentication Failed</h2>
+        <p id="error-message" class="error-detail">An error occurred during authentication.</p>
+
+        <button id="btn-retry" class="btn btn-primary">Try Again</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

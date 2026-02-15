@@ -9,8 +9,18 @@ const WALLET_PORT = Number(process.env.WALLET_PORT || 17000);
 const WALLET_URL = process.env.WALLET_URL || `http://localhost:${WALLET_PORT}`;
 app.setName("MiID");
 const walletSignSecret = cryptoRandomSecret();
-const runtimeFile = path.join(__dirname, "..", "..", "data", "menubar-runtime.json");
-const testHooksEnabled = process.env.MIID_TEST_HOOKS === "1";
+const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
+const singleInstanceLock = app.requestSingleInstanceLock();
+
+if (!singleInstanceLock) {
+  app.quit();
+}
+
+function dlog(message) {
+  if (DEBUG_AUTH) {
+    console.log(`[menubar] ${message}`);
+  }
+}
 
 let tray = null;
 let win = null;
@@ -89,14 +99,17 @@ function openWindow() {
   }
   win.show();
   win.focus();
+  dlog("window opened");
 }
 
 async function ensureWalletDid() {
   if (walletDid) {
+    dlog(`using did from memory did=${walletDid}`);
     return walletDid;
   }
   walletDid = loadDidFromWalletData();
   if (walletDid) {
+    dlog(`using did from wallet store did=${walletDid}`);
     return walletDid;
   }
   try {
@@ -106,13 +119,16 @@ async function ensureWalletDid() {
       body: JSON.stringify({ name: "desktop-user" })
     });
     walletDid = created.did;
+    dlog(`created did=${walletDid}`);
     return walletDid;
-  } catch (_err) {
+  } catch (err) {
+    dlog(`ensure did failed: ${err.message}`);
     return null;
   }
 }
 
 function showApproveNotification(serviceId, scopes) {
+  dlog(`notification service=${serviceId} scopes=${(scopes || []).join(",")}`);
   const n = new Notification({
     title: "MiID 승인 요청",
     body: `${serviceId}가 ${scopes.join(", ")} 요청`
@@ -128,11 +144,13 @@ function connectEventStream() {
   if (eventSource) {
     eventSource.close();
   }
+  dlog(`connect wallet event stream did=${walletDid}`);
   eventSource = new EventSource(`${GATEWAY_URL}/v1/wallet/events?did=${encodeURIComponent(walletDid)}`);
   const forward = (event) => {
     try {
       const data = JSON.parse(event.data);
       if (data.type === "challenge_created") {
+        dlog(`event challenge_created service=${data.payload.service_id}`);
         showApproveNotification(data.payload.service_id, data.payload.scopes || []);
       }
       if (win && !win.isDestroyed()) {
@@ -149,27 +167,9 @@ function connectEventStream() {
   eventSource.addEventListener("session_revoked", forward);
   eventSource.addEventListener("approved_cancelled", forward);
   eventSource.onerror = () => {
+    dlog("wallet event stream error (auto-retry)");
     // EventSource handles retry internally.
   };
-}
-
-function writeRuntimeInfo() {
-  try {
-    const runtime = {
-      wallet_url: WALLET_URL,
-      gateway_url: GATEWAY_URL,
-      did: walletDid || null,
-      updated_at: new Date().toISOString()
-    };
-    if (testHooksEnabled) {
-      runtime.wallet_sign_secret = walletSignSecret;
-      runtime.test_hooks = true;
-    }
-    fs.mkdirSync(path.dirname(runtimeFile), { recursive: true });
-    fs.writeFileSync(runtimeFile, JSON.stringify(runtime, null, 2));
-  } catch (_err) {
-    // ignore runtime write errors
-  }
 }
 
 function refreshTrayMenu() {
@@ -206,7 +206,6 @@ function syncDidFromStore() {
     return;
   }
   walletDid = fromStore;
-  writeRuntimeInfo();
   refreshTrayMenu();
   connectEventStream();
   broadcastDidChanged();
@@ -221,22 +220,30 @@ function createTray() {
 }
 
 ipcMain.handle("context:get", async () => {
+  dlog(`context requested did=${walletDid || "none"}`);
   return { did: walletDid, gatewayUrl: GATEWAY_URL, walletUrl: WALLET_URL };
 });
 
 ipcMain.handle("challenges:list", async () => {
-  return { challenges: await getChallenges() };
+  const list = await getChallenges();
+  dlog(`pending list count=${list.length}`);
+  return { challenges: list };
 });
 
 ipcMain.handle("sessions:list", async () => {
-  return { sessions: await getSessions() };
+  const sessions = await getSessions();
+  dlog(`sessions list count=${sessions.length}`);
+  return { sessions };
 });
 
 ipcMain.handle("approved:list", async () => {
-  return { approved: await getApproved() };
+  const approved = await getApproved();
+  dlog(`approved list count=${approved.length}`);
+  return { approved };
 });
 
 ipcMain.handle("approved:cancel", async (_event, authorizationCode) => {
+  dlog(`approved cancel code=${authorizationCode}`);
   return fetchJson(`${GATEWAY_URL}/v1/wallet/approved/${encodeURIComponent(authorizationCode)}`, {
     method: "DELETE",
     headers: { "content-type": "application/json" },
@@ -245,6 +252,7 @@ ipcMain.handle("approved:cancel", async (_event, authorizationCode) => {
 });
 
 ipcMain.handle("session:revoke", async (_event, sessionId) => {
+  dlog(`session revoke id=${sessionId}`);
   return fetchJson(`${GATEWAY_URL}/v1/wallet/sessions/${sessionId}`, {
     method: "DELETE",
     headers: { "content-type": "application/json" },
@@ -253,6 +261,7 @@ ipcMain.handle("session:revoke", async (_event, sessionId) => {
 });
 
 ipcMain.handle("challenge:approve", async (_event, challengeId) => {
+  dlog(`approve requested challenge=${challengeId}`);
   const challengeStatus = await fetchJson(`${GATEWAY_URL}/v1/auth/challenges/${challengeId}/status`);
   if (challengeStatus.status !== "pending") {
     throw new Error(`challenge_not_pending:${challengeStatus.status}`);
@@ -277,6 +286,7 @@ ipcMain.handle("challenge:approve", async (_event, challengeId) => {
       expires_at: current.expires_at
     })
   });
+  dlog(`approve click challenge=${challengeId} signed`);
 
   return fetchJson(`${GATEWAY_URL}/v1/wallet/challenges/${challengeId}/approve`, {
     method: "POST",
@@ -286,6 +296,7 @@ ipcMain.handle("challenge:approve", async (_event, challengeId) => {
 });
 
 ipcMain.handle("challenge:deny", async (_event, challengeId) => {
+  dlog(`deny requested challenge=${challengeId}`);
   return fetchJson(`${GATEWAY_URL}/v1/wallet/challenges/${challengeId}/deny`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -297,10 +308,15 @@ app.whenReady().then(async () => {
   process.env.WALLET_SIGN_SECRET = walletSignSecret;
   walletServer = startWalletServer({ port: WALLET_PORT });
   await ensureWalletDid();
-  writeRuntimeInfo();
+  dlog(`app ready did=${walletDid || "none"} gateway=${GATEWAY_URL}`);
   createTray();
   connectEventStream();
   didSyncTimer = setInterval(syncDidFromStore, 3000);
+});
+
+app.on("second-instance", () => {
+  dlog("second instance attempted; focusing existing window");
+  openWindow();
 });
 
 app.on("window-all-closed", (e) => {
@@ -308,13 +324,6 @@ app.on("window-all-closed", (e) => {
 });
 
 app.on("before-quit", () => {
-  try {
-    if (fs.existsSync(runtimeFile)) {
-      fs.unlinkSync(runtimeFile);
-    }
-  } catch (_err) {
-    // ignore cleanup errors
-  }
   if (didSyncTimer) {
     clearInterval(didSyncTimer);
   }

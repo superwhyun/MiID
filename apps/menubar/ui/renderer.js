@@ -226,6 +226,7 @@ async function boot() {
     await loadSessions();
   });
   setInterval(loadApproved, 4000);
+  setInterval(loadChallenges, 4000);
   setInterval(loadSessions, 10000);
 }
 

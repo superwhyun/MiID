@@ -21,6 +21,14 @@ function cleanupStaleMenubar() {
   }
 }
 
+function cleanupStaleGateway() {
+  try {
+    execSync("pkill -f 'apps/gateway/server.js'", { stdio: "ignore" });
+  } catch (_err) {
+    // ignore
+  }
+}
+
 function run(name, cmd, args) {
   const child = spawn(cmd, args, {
     cwd: root,
@@ -131,6 +139,7 @@ function shutdown(signal) {
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
+cleanupStaleGateway();
 startGateway();
 cleanupStaleMenubar();
 startMenubar();

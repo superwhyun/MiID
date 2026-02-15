@@ -9,6 +9,13 @@ function getSignSecret() {
 }
 const DATA_DIR = path.join(__dirname, "..", "..", "data");
 const DATA_FILE = path.join(DATA_DIR, "wallet.json");
+const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
+
+function dlog(message) {
+  if (DEBUG_AUTH) {
+    console.log(`[wallet] ${message}`);
+  }
+}
 
 function ensureStore() {
   if (!fs.existsSync(DATA_DIR)) {
@@ -66,6 +73,7 @@ function createWalletApp() {
   wallet.did = buildDid(wallet.id);
   store.wallets.push(wallet);
   writeStore(store);
+  dlog(`wallet created did=${wallet.did}`);
 
   return res.status(201).json({
     wallet_id: wallet.id,
@@ -93,8 +101,10 @@ function createWalletApp() {
   const store = readStore();
   const wallet = store.wallets.find((w) => w.did === did);
   if (!wallet) {
+    dlog(`did lookup miss did=${did}`);
     return res.status(404).json({ error: "did_not_found" });
   }
+  dlog(`did lookup hit did=${did}`);
   return res.json({
     wallet_id: wallet.id,
     did: wallet.did,
@@ -104,10 +114,14 @@ function createWalletApp() {
   });
 
   app.post("/v1/wallets/sign", (req, res) => {
+  const reqDid = req.body?.did || "unknown";
+  const reqChallenge = req.body?.challenge_id || "unknown";
+  dlog(`sign request did=${reqDid} challenge_id=${reqChallenge}`);
   const signSecret = getSignSecret();
   if (signSecret) {
     const sent = req.headers["x-wallet-sign-secret"];
     if (sent !== signSecret) {
+      dlog(`sign rejected unauthorized did=${reqDid}`);
       return res.status(401).json({ error: "unauthorized_sign_request" });
     }
   }
@@ -124,6 +138,7 @@ function createWalletApp() {
 
   const payload = JSON.stringify({ challenge_id, nonce, audience, expires_at });
   const signature = signPayload(wallet.private_key_pem, payload);
+  dlog(`sign ok did=${did} challenge_id=${challenge_id}`);
   return res.json({
     did,
     kid: `${wallet.did}#key-1`,
@@ -161,7 +176,7 @@ function startWalletServer(options = {}) {
   const port = Number(options.port || PORT);
   const app = createWalletApp();
   const server = app.listen(port, () => {
-    console.log(`wallet listening on http://localhost:${port}`);
+    console.log(`wallet listening on http://localhost:${port} debug=${DEBUG_AUTH ? "on" : "off"}`);
   });
   return server;
 }

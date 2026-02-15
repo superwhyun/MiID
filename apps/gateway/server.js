@@ -6,6 +6,13 @@ const path = require("path");
 const PORT = process.env.GATEWAY_PORT || 14000;
 const DATA_DIR = path.join(__dirname, "..", "..", "data");
 const DATA_FILE = path.join(DATA_DIR, "gateway.json");
+const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
+
+function dlog(message) {
+  if (DEBUG_AUTH) {
+    console.log(`[gateway] ${message}`);
+  }
+}
 
 function ensureStore() {
   if (!fs.existsSync(DATA_DIR)) {
@@ -167,6 +174,7 @@ function requireBearer(req, res, next) {
 const app = express();
 app.use(express.json());
 const walletStreams = new Map();
+const challengeStreams = new Map();
 
 function addWalletStream(did, res) {
   const current = walletStreams.get(did) || new Set();
@@ -197,6 +205,45 @@ function pushWalletEvent(did, type, payload) {
   });
 }
 
+function addChallengeStream(challengeId, res) {
+  const current = challengeStreams.get(challengeId) || new Set();
+  current.add(res);
+  challengeStreams.set(challengeId, current);
+}
+
+function removeChallengeStream(challengeId, res) {
+  const current = challengeStreams.get(challengeId);
+  if (!current) {
+    return;
+  }
+  current.delete(res);
+  if (current.size === 0) {
+    challengeStreams.delete(challengeId);
+  }
+}
+
+function pushChallengeEvent(challengeId, type, payload) {
+  const current = challengeStreams.get(challengeId);
+  if (!current) {
+    return;
+  }
+  const body = JSON.stringify({ type, payload, at: nowIso() });
+  current.forEach((res) => {
+    res.write(`event: ${type}\n`);
+    res.write(`data: ${body}\n\n`);
+  });
+}
+
+function broadcastWalletEvent(type, payload) {
+  const body = JSON.stringify({ type, payload, at: nowIso() });
+  walletStreams.forEach((clients) => {
+    clients.forEach((res) => {
+      res.write(`event: ${type}\n`);
+      res.write(`data: ${body}\n\n`);
+    });
+  });
+}
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "gateway", now: nowIso() });
 });
@@ -210,6 +257,7 @@ app.get("/v1/wallet/events", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders?.();
+  dlog(`wallet events connected did=${did}`);
   res.write(`event: connected\n`);
   res.write(`data: ${JSON.stringify({ did, at: nowIso() })}\n\n`);
   addWalletStream(did, res);
@@ -219,6 +267,39 @@ app.get("/v1/wallet/events", (req, res) => {
   req.on("close", () => {
     clearInterval(keepAlive);
     removeWalletStream(did, res);
+    dlog(`wallet events disconnected did=${did}`);
+  });
+});
+
+app.get("/v1/service/events", (req, res) => {
+  const challengeId = req.query.challenge_id;
+  if (!challengeId) {
+    return res.status(400).json({ error: "challenge_id_required" });
+  }
+
+  const store = readStore();
+  const challenge = store.challenges.find((c) => c.id === challengeId);
+  if (!challenge) {
+    return res.status(404).json({ error: "challenge_not_found" });
+  }
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders?.();
+  dlog(`service events connected challenge_id=${challengeId}`);
+  res.write(`event: connected\n`);
+  res.write(`data: ${JSON.stringify({ challenge_id: challengeId, at: nowIso() })}\n\n`);
+
+  addChallengeStream(challengeId, res);
+  const keepAlive = setInterval(() => {
+    res.write(`event: ping\ndata: {}\n\n`);
+  }, 15000);
+
+  req.on("close", () => {
+    clearInterval(keepAlive);
+    removeChallengeStream(challengeId, res);
+    dlog(`service events disconnected challenge_id=${challengeId}`);
   });
 });
 
@@ -250,13 +331,17 @@ app.post("/v1/auth/challenge", (req, res) => {
   };
   store.challenges.push(challenge);
   writeStore(store);
+  dlog(`challenge created id=${challenge.id} did_hint=${challenge.did_hint || "none"} service=${challenge.service_id}`);
+  const eventPayload = {
+    challenge_id: challenge.id,
+    service_id: challenge.service_id,
+    scopes: challenge.scopes,
+    expires_at: challenge.expires_at
+  };
   if (challenge.did_hint) {
-    pushWalletEvent(challenge.did_hint, "challenge_created", {
-      challenge_id: challenge.id,
-      service_id: challenge.service_id,
-      scopes: challenge.scopes,
-      expires_at: challenge.expires_at
-    });
+    pushWalletEvent(challenge.did_hint, "challenge_created", eventPayload);
+  } else {
+    broadcastWalletEvent("challenge_created", eventPayload);
   }
 
   return res.status(201).json({
@@ -327,9 +412,10 @@ app.get("/v1/auth/challenges/:challengeId/status", (req, res) => {
   if (!challenge) {
     return res.status(404).json({ error: "challenge_not_found" });
   }
-    if (new Date(challenge.expires_at) < new Date() && challenge.status === "pending") {
-      challenge.status = "expired";
-      writeStore(store);
+  if (new Date(challenge.expires_at) < new Date() && challenge.status === "pending") {
+    challenge.status = "expired";
+    writeStore(store);
+    pushChallengeEvent(challenge.id, "challenge_expired", { challenge_id: challenge.id });
       if (challenge.did_hint) {
         pushWalletEvent(challenge.did_hint, "challenge_expired", { challenge_id: challenge.id });
       }
@@ -352,7 +438,7 @@ app.get("/v1/wallet/challenges", (req, res) => {
   }
   const store = readStore();
   const pending = store.challenges
-    .filter((c) => c.did_hint === did && c.status === "pending" && new Date(c.expires_at) > new Date())
+    .filter((c) => (c.did_hint === did || c.did_hint === null) && c.status === "pending" && new Date(c.expires_at) > new Date())
     .map((c) => ({
       challenge_id: c.id,
       service_id: c.service_id,
@@ -362,6 +448,7 @@ app.get("/v1/wallet/challenges", (req, res) => {
       risk_action: c.risk_action,
       expires_at: c.expires_at
     }));
+  dlog(`wallet pending query did=${did} count=${pending.length}`);
   return res.json({ did, challenges: pending });
 });
 
@@ -382,6 +469,7 @@ app.get("/v1/wallet/sessions", (req, res) => {
       expires_at: s.expires_at,
       created_at: s.created_at
     }));
+  dlog(`wallet sessions query did=${did} count=${sessions.length}`);
   return res.json({ did, sessions });
 });
 
@@ -403,6 +491,7 @@ app.get("/v1/wallet/approved", (req, res) => {
       scopes: c.scopes,
       expires_at: c.expires_at
     }));
+  dlog(`wallet approved query did=${did} count=${approved.length}`);
   return res.json({ did, approved });
 });
 
@@ -442,6 +531,7 @@ app.delete("/v1/wallet/approved/:authCode", (req, res) => {
     challenge.used_at = null;
   }
   writeStore(store);
+  dlog(`approved cancelled did=${did} challenge=${challenge.id} auth_code=${authCode.code}`);
   pushWalletEvent(did, "approved_cancelled", {
     challenge_id: challenge.id,
     authorization_code: authCode.code,
@@ -475,6 +565,7 @@ app.delete("/v1/wallet/sessions/:sessionId", (req, res) => {
 
   session.revoked_at = nowIso();
   writeStore(store);
+  dlog(`session revoked did=${did} session=${session.id}`);
   pushWalletEvent(did, "session_revoked", {
     session_id: session.id,
     service_id: session.service_id
@@ -502,6 +593,7 @@ app.post("/v1/wallet/challenges/:challengeId/approve", async (req, res) => {
       return res.status(409).json({ error: "challenge_not_pending", status: challenge.status });
     }
     if (challenge.did_hint && challenge.did_hint !== did) {
+      dlog(`approve denied did mismatch challenge=${challenge.id} expected=${challenge.did_hint} got=${did}`);
       return res.status(403).json({ error: "did_mismatch" });
     }
     if (new Date(challenge.expires_at) < new Date()) {
@@ -526,6 +618,15 @@ app.post("/v1/wallet/challenges/:challengeId/approve", async (req, res) => {
     upsertConsentForApproval(store, challenge.service_id, subjectId, challenge.scopes, "wallet_approve");
     const authCode = issueAuthCodeFromChallenge(store, challenge, did);
     writeStore(store);
+    dlog(`challenge approved id=${challenge.id} did=${did} auth_code=${authCode.code}`);
+    pushChallengeEvent(challenge.id, "challenge_verified", {
+      challenge_id: challenge.id,
+      authorization_code: authCode.code,
+      service_id: challenge.service_id,
+      client_id: challenge.client_id,
+      redirect_uri: challenge.redirect_uri,
+      status: challenge.status
+    });
     pushWalletEvent(did, "challenge_approved", {
       challenge_id: challenge.id,
       authorization_code: authCode.code,
@@ -555,6 +656,7 @@ app.post("/v1/wallet/challenges/:challengeId/deny", (req, res) => {
     return res.status(404).json({ error: "challenge_not_found" });
   }
   if (challenge.did_hint && challenge.did_hint !== did) {
+    dlog(`deny rejected did mismatch challenge=${challenge.id} expected=${challenge.did_hint} got=${did}`);
     return res.status(403).json({ error: "did_mismatch" });
   }
   if (challenge.status !== "pending") {
@@ -563,6 +665,8 @@ app.post("/v1/wallet/challenges/:challengeId/deny", (req, res) => {
   challenge.status = "denied";
   challenge.denied_at = nowIso();
   writeStore(store);
+  dlog(`challenge denied id=${challenge.id} did=${did}`);
+  pushChallengeEvent(challenge.id, "challenge_denied", { challenge_id: challenge.id, service_id: challenge.service_id });
   pushWalletEvent(did, "challenge_denied", { challenge_id: challenge.id, service_id: challenge.service_id });
   return res.json({ challenge_id: challenge.id, status: challenge.status, denied_at: challenge.denied_at });
 });
@@ -572,6 +676,7 @@ app.post("/v1/token/exchange", (req, res) => {
   if (grant_type !== "authorization_code" || !code || !client_id || !redirect_uri) {
     return res.status(400).json({ error: "invalid_request" });
   }
+  dlog(`token exchange attempt code=${code} client=${client_id}`);
 
   const store = readStore();
   const authCode = store.authCodes.find((c) => c.code === code);
@@ -621,6 +726,7 @@ app.post("/v1/token/exchange", (req, res) => {
   authCode.used_at = nowIso();
   store.sessions.push(session);
   writeStore(store);
+  dlog(`token exchange success code=${code} session=${session.id} did=${session.did}`);
   pushWalletEvent(session.did, "session_created", {
     session_id: session.id,
     service_id: session.service_id,
@@ -743,5 +849,5 @@ app.get("/v1/services/:serviceId/profile", requireBearer, (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`gateway listening on http://localhost:${PORT}`);
+  console.log(`gateway listening on http://localhost:${PORT} debug=${DEBUG_AUTH ? "on" : "off"}`);
 });

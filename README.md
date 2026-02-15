@@ -1,8 +1,9 @@
 # MiID Managed DID SSO Prototype
 
-로컬에서 다음 3가지를 동작시키는 최소 구현입니다.
+로컬에서 다음을 동작시키는 최소 구현입니다.
 - Wallet 서버: DID 생성/공개키 조회/챌린지 서명
 - Auth Gateway 서버: 챌린지/검증/토큰/동의/보호 API
+- Service Backend/Frontend 데모: 승인 후 SSE로 인증 성공 수신
 - End-to-end 데모 스크립트
 
 ## Run
@@ -37,15 +38,18 @@ npm run start:menubar
 npm run dev:desktop
 ```
 
+서비스 데모 실행(브라우저 UI):
+```bash
+npm run start:service
+# open http://localhost:3000
+```
+
 승인 요청 자동 테스트:
 ```bash
 npm run test:approval
 ```
 이 스크립트는 `Approved`까지만 진행합니다(Active 전환 안 함).
-기본적으로는 보안상 비활성화되어 있으며, 테스트할 때만 아래처럼 실행:
-```bash
-MIID_TEST_HOOKS=1 npm run dev:desktop:hot
-```
+승인은 메뉴바 UI에서 직접 수행합니다.
 
 서비스 최종 교환(Approved -> Active) 테스트:
 ```bash
@@ -87,6 +91,8 @@ open dist/MiID-darwin-arm64/MiID.app
 ## Default Ports
 - Wallet: `17000`
 - Gateway: `14000`
+- Service Backend: `15000`
+- Service Frontend: `3000`
 
 환경변수로 변경 가능:
 - `WALLET_PORT`
@@ -104,8 +110,11 @@ Gateway:
 - `GET /v1/services/:serviceId/profile`
 - `GET /v1/auth/challenges/:challengeId/status`
 - `GET /v1/wallet/events?did=...` (SSE)
+- `GET /v1/service/events?challenge_id=...` (SSE)
 - `GET /v1/wallet/challenges?did=...`
+- `GET /v1/wallet/approved?did=...`
 - `GET /v1/wallet/sessions?did=...`
+- `DELETE /v1/wallet/approved/:authCode`
 - `DELETE /v1/wallet/sessions/:sessionId`
 - `POST /v1/wallet/challenges/:challengeId/approve`
 - `POST /v1/wallet/challenges/:challengeId/deny`
