@@ -1,0 +1,44 @@
+[
+  {
+    "label": "이름",
+    "key": "name",
+    "type": "text",
+    "placeholder": "실명을 입력하세요"
+  },
+  {
+    "label": "닉네임",
+    "key": "nickname",
+    "type": "text",
+    "placeholder": "표시될 이름"
+  },
+  {
+    "label": "이메일",
+    "key": "email",
+    "type": "email",
+    "placeholder": "email@example.com"
+  },
+  {
+    "label": "전화번호",
+    "key": "phone",
+    "type": "tel",
+    "placeholder": "010-0000-0000"
+  },
+  {
+    "label": "생년월일",
+    "key": "birthdate",
+    "type": "date",
+    "placeholder": ""
+  },
+  {
+    "label": "회사",
+    "key": "company",
+    "type": "text",
+    "placeholder": "회사명"
+  },
+  {
+    "label": "직책",
+    "key": "title",
+    "type": "text",
+    "placeholder": "직책"
+  }
+]

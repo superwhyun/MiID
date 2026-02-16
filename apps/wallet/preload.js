@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld("miid", {
   revokeSession: (payload) => ipcRenderer.invoke("session:revoke", payload),
   setClaimPolicy: (payload) => ipcRenderer.invoke("claim-policy:set", payload),
   getClaimPolicy: (payload) => ipcRenderer.invoke("claim-policy:get", payload),
+  deleteWallet: (payload) => ipcRenderer.invoke("wallets:delete", payload),
+  getProfileFields: () => ipcRenderer.invoke("profile-fields:get"),
   onChallengeEvent: (handler) => {
     ipcRenderer.on("challenge:event", (_event, data) => handler(data));
   }
