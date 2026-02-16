@@ -127,12 +127,12 @@ function normalizeRequestedClaims(requestedClaims) {
 }
 
 function filterProfileClaims(profileClaims, approvedClaims) {
-  const approved = new Set(approvedClaims || []);
-  return {
-    name: approved.has("name") ? (profileClaims?.name || null) : null,
-    email: approved.has("email") ? (profileClaims?.email || null) : null,
-    nickname: approved.has("nickname") ? (profileClaims?.nickname || null) : null
-  };
+  const approvedArr = Array.isArray(approvedClaims) ? approvedClaims : [];
+  const filtered = {};
+  approvedArr.forEach((claim) => {
+    filtered[claim] = profileClaims[claim] !== undefined ? profileClaims[claim] : null;
+  });
+  return filtered;
 }
 
 function findOrCreateSubject(store, did, serviceId) {
@@ -156,8 +156,21 @@ function toSafeText(value) {
 
 function normalizeWalletProfile(wallet) {
   if (!wallet || typeof wallet !== "object") {
-    return { name: null, email: null, nickname: null };
+    return {};
   }
+  // Use unified profile if available
+  if (wallet.profile && typeof wallet.profile === "object") {
+    const normalized = {};
+    Object.entries(wallet.profile).forEach(([key, data]) => {
+      if (typeof data === "object") {
+        normalized[key] = data.value || null;
+      } else {
+        normalized[key] = data || null;
+      }
+    });
+    return normalized;
+  }
+  // Fallback for old wallet records
   return {
     name: toSafeText(wallet.name),
     email: toSafeText(wallet.email),
@@ -729,10 +742,10 @@ app.get("/v1/auth/challenges/:challengeId/status", (req, res) => {
     challenge.status = "expired";
     writeStore(store);
     pushChallengeEvent(challenge.id, "challenge_expired", { challenge_id: challenge.id });
-      if (challenge.did_hint) {
-        pushWalletEvent(challenge.did_hint, "challenge_expired", { challenge_id: challenge.id });
-      }
+    if (challenge.did_hint) {
+      pushWalletEvent(challenge.did_hint, "challenge_expired", { challenge_id: challenge.id });
     }
+  }
 
   return res.json({
     challenge_id: challenge.id,
@@ -1237,18 +1250,26 @@ app.get("/v1/services/:serviceId/profile", requireBearer, (req, res) => {
     return res.status(403).json({ error: "service_mismatch" });
   }
   const approvedSet = new Set(Array.isArray(session.approved_claims) ? session.approved_claims : []);
-  return res.json({
+  const profileResponse = {
     service_id: session.service_id,
     subject_id: session.subject_id,
     did: session.did,
     scope: session.scope,
     requested_claims: Array.isArray(session.requested_claims) ? session.requested_claims : [],
     approved_claims: Array.isArray(session.approved_claims) ? session.approved_claims : [],
-    risk_level: session.risk_level,
-    name: approvedSet.has("name") ? (session.profile_claims?.name || null) : null,
-    email: approvedSet.has("email") ? (session.profile_claims?.email || null) : null,
-    nickname: approvedSet.has("nickname") ? (session.profile_claims?.nickname || null) : null
-  });
+    risk_level: session.risk_level
+  };
+
+  // Dynamically add all approved claims from profile_claims
+  if (session.profile_claims) {
+    Object.entries(session.profile_claims).forEach(([key, value]) => {
+      if (approvedSet.has(key)) {
+        profileResponse[key] = value;
+      }
+    });
+  }
+
+  return res.json(profileResponse);
 });
 
 app.listen(PORT, () => {

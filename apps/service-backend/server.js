@@ -544,7 +544,7 @@ app.get("/profile", (req, res) => {
   const scopeText = scope || profile?.scope || "";
   const approvedClaims = Array.isArray(profile?.approved_claims) ? profile.approved_claims : [];
   const approvedSet = new Set(approvedClaims);
-  return res.json({
+  const profileResponse = {
     subject_id: profile?.subject_id || null,
     did: profile?.did || null,
     service_id: profile?.service_id || SERVICE_ID,
@@ -552,11 +552,20 @@ app.get("/profile", (req, res) => {
     requested_claims: Array.isArray(profile?.requested_claims) ? profile.requested_claims : [],
     approved_claims: approvedClaims,
     risk_level: profile?.risk_level || "normal",
-    name: approvedSet.has("name") ? (profile?.name || null) : null,
-    email: approvedSet.has("email") ? (profile?.email || null) : null,
-    nickname: approvedSet.has("nickname") ? (profile?.nickname || null) : null,
     session_expires_at: expiresAt
-  });
+  };
+
+  // Dynamically add all approved claims from the profile data
+  // The profile object from Gateway now contains actual values for approved keys
+  if (profile) {
+    Object.keys(profile).forEach(key => {
+      if (approvedSet.has(key)) {
+        profileResponse[key] = profile[key];
+      }
+    });
+  }
+
+  return res.json(profileResponse);
 });
 
 app.post("/logout", (req, res) => {

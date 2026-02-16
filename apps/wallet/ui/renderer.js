@@ -5,6 +5,10 @@ const statusEl = document.getElementById("status");
 const didLabelEl = document.getElementById("didLabel");
 const pendingCountEl = document.getElementById("pendingCount");
 const identityCountEl = document.getElementById("identityCount");
+const profileModal = document.getElementById("profileModal");
+const profileModalBody = document.getElementById("profileModalBody");
+const deleteModal = document.getElementById("deleteModal");
+const deleteDidNameEl = document.getElementById("deleteDidName");
 
 const challengeDrafts = new Map();
 const policyCache = new Map();
@@ -13,6 +17,23 @@ const expandedDids = new Set();
 let wallets = [];
 let sessionsByDid = new Map();
 let approvedByDid = new Map();
+let profileFields = [];
+let currentEditingDid = null;
+let currentDeletingDid = null;
+
+// 설정 파일 로드 (샘플 필드 정의용으로만 사용)
+async function loadProfileFields() {
+  try {
+    const result = await window.miid.getProfileFields();
+    profileFields = Array.isArray(result) ? result : [];
+  } catch (err) {
+    profileFields = [
+      { label: "이름", key: "name", type: "text", placeholder: "실명을 입력하세요" },
+      { label: "닉네임", key: "nickname", type: "text", placeholder: "표시될 이름" },
+      { label: "이메일", key: "email", type: "email", placeholder: "email@example.com" }
+    ];
+  }
+}
 
 function setStatus(text) {
   statusEl.textContent = text || "";
@@ -47,7 +68,7 @@ function setPolicy(did, serviceId, claims) {
     ? [...new Set(claims)].filter((v) => typeof v === "string")
     : [];
   policyCache.set(policyKey(did, serviceId), normalized);
-  window.miid.setClaimPolicy({ did, serviceId, claims: normalized }).catch(() => {});
+  window.miid.setClaimPolicy({ did, serviceId, claims: normalized }).catch(() => { });
 }
 
 function shortenDid(did) {
@@ -57,14 +78,14 @@ function shortenDid(did) {
 }
 
 function getInitials(name) {
-  if (!name) return "?";
+  if (!name || typeof name !== "string") return "?";
   return name.slice(0, 2).toUpperCase();
 }
 
 async function loadWalletsData() {
   const result = await window.miid.listWallets();
   wallets = Array.isArray(result?.wallets) ? result.wallets : [];
-  
+
   if (wallets.length > 0) {
     didLabelEl.textContent = `${wallets.length}개의 아이덴티티`;
     identityCountEl.textContent = wallets.length;
@@ -103,6 +124,254 @@ async function loadApprovedData() {
   approvedByDid = grouped;
 }
 
+// Claim 헬퍼
+function getWalletClaimValue(wallet, claim) {
+  if (!wallet) return null;
+  const profile = wallet.profile || {};
+  return profile[claim]?.value || null;
+}
+
+function getClaimLabel(claim) {
+  const wallet = wallets.find(w => currentEditingDid === w.did);
+  if (wallet?.profile?.[claim]) {
+    return wallet.profile[claim].label || claim;
+  }
+  const field = profileFields.find(f => f.key === claim);
+  return field ? field.label : claim;
+}
+
+// ==================== 모달 함수 ====================
+
+function openProfileModal(did) {
+  currentEditingDid = did;
+  const wallet = wallets.find(w => w.did === did);
+  if (!wallet) return;
+
+  profileModalBody.innerHTML = "";
+
+  // ===== 통합 프로필 섹션 =====
+  const profileSection = document.createElement("div");
+  profileSection.style.marginBottom = "24px";
+
+  const headerRow = document.createElement("div");
+  headerRow.style.cssText = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;";
+
+  const title = document.createElement("div");
+  title.style.cssText = "font-size: 12px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px;";
+  title.textContent = "프로필 정보";
+
+  const addBtn = document.createElement("button");
+  addBtn.innerHTML = "+ 필드 추가";
+  addBtn.style.cssText = "background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; border: none; border-radius: 8px; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer;";
+  addBtn.onclick = () => addProfileFieldRow();
+
+  headerRow.appendChild(title);
+  headerRow.appendChild(addBtn);
+  profileSection.appendChild(headerRow);
+
+  // 테이블 헤더
+  const tableHeader = document.createElement("div");
+  tableHeader.style.cssText = "display: grid; grid-template-columns: 1fr 1fr 1.5fr auto; gap: 8px; padding: 8px; font-size: 11px; font-weight: 600; color: #64748b; border-bottom: 1px solid #e2e8f0; margin-bottom: 8px;";
+  tableHeader.innerHTML = `<span>표시 이름</span><span>Claim 키</span><span>값</span><span></span>`;
+  profileSection.appendChild(tableHeader);
+
+  const fieldsContainer = document.createElement("div");
+  fieldsContainer.id = "profileFieldsContainer";
+  profileSection.appendChild(fieldsContainer);
+
+  // 통합 프로필 데이터 로드 (서버에서 마이그레이션된 데이터가 오므로 profile 객체 사용)
+  const profile = wallet.profile || {};
+
+  // 기본 필드(profileFields.json)와 저장된 정보를 병합하여 항상 보이게 함
+  const displayedKeys = new Set();
+
+  // 1. 기본 필드 먼저 추가
+  profileFields.forEach(f => {
+    const saved = profile[f.key];
+    addProfileFieldRow(f.label, f.key, saved?.value || "", fieldsContainer);
+    displayedKeys.add(f.key);
+  });
+
+  // 2. 추가된 커스텀 필드들 추가
+  Object.entries(profile).forEach(([key, data]) => {
+    if (!displayedKeys.has(key)) {
+      addProfileFieldRow(data.label || key, key, data.value || "", fieldsContainer);
+    }
+  });
+
+  profileModalBody.appendChild(profileSection);
+
+  // ===== 위험 구역 =====
+  const dangerZone = document.createElement("div");
+  dangerZone.className = "danger-zone";
+  dangerZone.innerHTML = `
+    <div class="danger-title">🗑️ 위험 구역</div>
+    <div class="danger-hint">이 아이덴티티를 삭제하면 모든 연결이 끊어지며 복구할 수 없습니다.</div>
+  `;
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.className = "btn btn-danger";
+  deleteBtn.style.width = "100%";
+  deleteBtn.innerHTML = "🗑️ 아이덴티티 삭제";
+  deleteBtn.onclick = () => {
+    closeProfileModal();
+    openDeleteModal(did);
+  };
+
+  dangerZone.appendChild(deleteBtn);
+  profileModalBody.appendChild(dangerZone);
+
+  profileModal.classList.add("active");
+}
+
+function addProfileFieldRow(label = "", key = "", value = "", targetContainer = null) {
+  const container = targetContainer || document.getElementById("profileFieldsContainer");
+  if (!container) return;
+
+  const row = document.createElement("div");
+  row.className = "profile-field-row";
+  row.style.cssText = "display: grid; grid-template-columns: 1fr 1fr 1.5fr auto; gap: 8px; align-items: center; padding: 6px 8px; margin-bottom: 4px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;";
+
+  // 표시 이름
+  const labelInput = document.createElement("input");
+  labelInput.type = "text";
+  labelInput.className = "field-label-input";
+  labelInput.value = label;
+  labelInput.placeholder = "표시이름";
+  labelInput.style.cssText = "border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 8px; font-size: 13px; background: white; box-sizing: border-box; width: 100%;";
+
+  // Claim 키
+  const keyInput = document.createElement("input");
+  keyInput.type = "text";
+  keyInput.className = "field-key-input";
+  keyInput.value = key;
+  keyInput.placeholder = "claim_key";
+  keyInput.style.cssText = "border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 8px; font-size: 13px; font-family: monospace; background: white; box-sizing: border-box; width: 100%;";
+
+  // 값
+  const valueInput = document.createElement("input");
+  valueInput.type = "text";
+  valueInput.className = "field-value-input";
+  valueInput.value = value;
+  valueInput.placeholder = "값 입력";
+  valueInput.style.cssText = "border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 8px; font-size: 13px; background: white; box-sizing: border-box; width: 100%;";
+
+  // 삭제 버튼
+  const btnCell = document.createElement("div");
+  btnCell.style.cssText = "display: flex; justify-content: center;";
+  const deleteBtn = document.createElement("button");
+  deleteBtn.innerHTML = "🗑️";
+  deleteBtn.style.cssText = "background: none; border: none; cursor: pointer; font-size: 14px; padding: 4px;";
+  deleteBtn.onclick = () => row.remove();
+  btnCell.appendChild(deleteBtn);
+
+  // 자동 키 생성
+  labelInput.addEventListener("blur", () => {
+    if (labelInput.value && !keyInput.value) {
+      keyInput.value = generateFieldKey(labelInput.value);
+    }
+  });
+
+  row.appendChild(labelInput);
+  row.appendChild(keyInput);
+  row.appendChild(valueInput);
+  row.appendChild(btnCell);
+  container.appendChild(row);
+}
+
+function closeProfileModal() {
+  profileModal.classList.remove("active");
+  currentEditingDid = null;
+}
+
+async function saveProfile() {
+  if (!currentEditingDid) return;
+
+  const btn = document.getElementById("saveProfileBtn");
+  btn.disabled = true;
+
+  try {
+    const profile = {};
+    const container = document.getElementById("profileFieldsContainer");
+    if (container) {
+      container.querySelectorAll(".profile-field-row").forEach((row) => {
+        const labelInput = row.querySelector(".field-label-input");
+        const keyInput = row.querySelector(".field-key-input");
+        const valueInput = row.querySelector(".field-value-input");
+
+        const label = labelInput?.value?.trim();
+        const key = keyInput?.value?.trim();
+        const value = valueInput?.value?.trim();
+
+        if (key && label) {
+          profile[key] = { label, value: value || "" };
+        }
+      });
+    }
+
+    await window.miid.updateProfile({
+      did: currentEditingDid,
+      profile
+    });
+
+    btn.innerHTML = "✅ 저장됨";
+    setTimeout(() => {
+      btn.innerHTML = "💾 저장";
+    }, 2000);
+
+    await loadWalletsData();
+    renderDids();
+    closeProfileModal();
+    clearStatus();
+  } catch (err) {
+    setStatus(`프로필 저장 실패: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ==================== 삭제 모달 ====================
+
+function openDeleteModal(did) {
+  currentDeletingDid = did;
+  const wallet = wallets.find(w => w.did === did);
+  const profile = wallet?.profile || {};
+  const displayName = profile.nickname?.value || profile.name?.value || shortenDid(did);
+  deleteDidNameEl.textContent = displayName;
+  deleteModal.classList.add("active");
+}
+
+function closeDeleteModal() {
+  deleteModal.classList.remove("active");
+  currentDeletingDid = null;
+}
+
+async function confirmDeleteDid() {
+  if (!currentDeletingDid) return;
+
+  const btn = document.getElementById("confirmDeleteBtn");
+  btn.disabled = true;
+
+  try {
+    await window.miid.deleteWallet({ did: currentDeletingDid });
+    expandedDids.delete(currentDeletingDid);
+
+    await loadWalletsData();
+    await loadSessionsData();
+    await loadApprovedData();
+    renderDids();
+    closeDeleteModal();
+    clearStatus();
+  } catch (err) {
+    setStatus(`삭제 실패: ${err.message}`);
+    closeDeleteModal();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ==================== UI 생성 함수 ====================
+
 function createClaimChip(claim, active, onToggle) {
   const chip = document.createElement("button");
   chip.type = "button";
@@ -119,7 +388,7 @@ function createSessionCard(session) {
 
   const header = document.createElement("div");
   header.className = "card-header";
-  
+
   const title = document.createElement("div");
   title.className = "service-name";
   title.textContent = session.service_id;
@@ -133,41 +402,32 @@ function createSessionCard(session) {
 
   const claimsSection = document.createElement("div");
   claimsSection.className = "claims-section";
-  
+
   const chips = document.createElement("div");
   chips.className = "claim-chips";
   requestedClaims.forEach((claim) => {
     const chip = createClaimChip(claim, selected.has(claim), () => {
-      if (selected.has(claim)) {
-        selected.delete(claim);
-      } else {
-        selected.add(claim);
-      }
+      if (selected.has(claim)) selected.delete(claim);
+      else selected.add(claim);
       chip.classList.toggle("active", selected.has(claim));
       chip.setAttribute("aria-pressed", selected.has(claim) ? "true" : "false");
-      const claims = requestedClaims.filter((c) => selected.has(c));
-      setPolicy(session.did, session.service_id, claims);
+      setPolicy(session.did, session.service_id, requestedClaims.filter((c) => selected.has(c)));
       clearStatus();
     });
     chips.appendChild(chip);
   });
-  if (requestedClaims.length > 0) {
-    claimsSection.appendChild(chips);
-  }
+
+  if (requestedClaims.length > 0) claimsSection.appendChild(chips);
   wrapper.appendChild(claimsSection);
 
   const meta = document.createElement("div");
   meta.className = "meta";
-  
-  // 위험도 표시
   const riskLevel = session.risk_level || "medium";
   const riskClass = riskLevel === "high" ? "risk-high" : riskLevel === "low" ? "risk-low" : "risk-medium";
   const riskText = riskLevel === "high" ? "높음" : riskLevel === "low" ? "낮음" : "중간";
-  
+
   meta.innerHTML = `
-    <span class="meta-item">
-      <span class="risk-badge ${riskClass}">보안 ${riskText}</span>
-    </span>
+    <span class="meta-item"><span class="risk-badge ${riskClass}">보안 ${riskText}</span></span>
     <span class="meta-item">⏰ ${session.expires_at || "만료 정보 없음"}까지</span>
   `;
   wrapper.appendChild(meta);
@@ -200,7 +460,7 @@ function createApprovedCard(item) {
 
   const header = document.createElement("div");
   header.className = "card-header";
-  
+
   const title = document.createElement("div");
   title.className = "service-name";
   title.textContent = item.service_id;
@@ -246,8 +506,12 @@ function createDidCard(wallet) {
   didApproved.forEach((item) => connectedServices.add(item.service_id));
   didSessions.forEach((item) => connectedServices.add(item.service_id));
 
-  // 아바타 (닉네임 이니셜 또는 이름)
-  const displayName = wallet.nickname || wallet.name || "나";
+  // Unified Profile에서 이름/닉네임 추출
+  const cardProfile = wallet.profile || {};
+  const nickname = String(cardProfile.nickname?.value || "").trim();
+  const name = String(cardProfile.name?.value || "").trim();
+  const displayName = nickname || name || "나";
+
   const avatar = document.createElement("div");
   avatar.className = "did-avatar";
   avatar.textContent = getInitials(displayName);
@@ -262,11 +526,10 @@ function createDidCard(wallet) {
   const addressEl = document.createElement("div");
   addressEl.className = "did-address";
   addressEl.textContent = shortenDid(wallet.did);
-  addressEl.title = wallet.did; // 툴팁에 전체 주소
+  addressEl.title = wallet.did;
 
   details.appendChild(nameEl);
   details.appendChild(addressEl);
-
   info.appendChild(avatar);
   info.appendChild(details);
 
@@ -281,15 +544,13 @@ function createDidCard(wallet) {
     stats.appendChild(statBadge);
   }
 
-  // 설정 버튼
   const settingsBtn = document.createElement("button");
   settingsBtn.className = "settings-btn";
   settingsBtn.innerHTML = "⚙️";
-  settingsBtn.title = "프로필 편집";
+  settingsBtn.title = "프로필 설정";
   settingsBtn.onclick = (e) => {
     e.stopPropagation();
-    const form = document.getElementById(`profile-${wallet.did}`);
-    form.classList.toggle("hidden");
+    openProfileModal(wallet.did);
   };
   stats.appendChild(settingsBtn);
 
@@ -302,65 +563,31 @@ function createDidCard(wallet) {
   header.appendChild(stats);
   wrapper.appendChild(header);
 
-  // 프로필 편집 영역 (설정 버튼으로 토글)
-  const form = document.createElement("div");
-  form.className = "did-profile hidden";
-  form.id = `profile-${wallet.did}`;
-
-  const profileGrid = document.createElement("div");
-  profileGrid.className = "profile-grid";
-
-  const nameField = document.createElement("div");
-  nameField.className = "profile-field";
-  nameField.innerHTML = `
-    <label>이름</label>
-    <input type="text" id="name-${wallet.did}" value="${wallet.name || ""}" placeholder="이름을 입력하세요">
-  `;
-
-  const emailField = document.createElement("div");
-  emailField.className = "profile-field";
-  emailField.innerHTML = `
-    <label>이메일</label>
-    <input type="email" id="email-${wallet.did}" value="${wallet.email || ""}" placeholder="이메일을 입력하세요">
-  `;
-
-  const nickField = document.createElement("div");
-  nickField.className = "profile-field";
-  nickField.innerHTML = `
-    <label>닉네임</label>
-    <input type="text" id="nick-${wallet.did}" value="${wallet.nickname || ""}" placeholder="닉네임을 입력하세요">
-  `;
-
-  profileGrid.appendChild(nameField);
-  profileGrid.appendChild(emailField);
-  profileGrid.appendChild(nickField);
-  form.appendChild(profileGrid);
-
-  const saveBtn = document.createElement("button");
-  saveBtn.className = "btn btn-primary";
-  saveBtn.innerHTML = "💾 프로필 저장";
-  saveBtn.addEventListener("click", async () => {
-    saveBtn.disabled = true;
-    try {
-      await window.miid.updateProfile({
-        did: wallet.did,
-        profile: {
-          name: document.getElementById(`name-${wallet.did}`).value || "",
-          email: document.getElementById(`email-${wallet.did}`).value || "",
-          nickname: document.getElementById(`nick-${wallet.did}`).value || ""
-        }
-      });
-      await loadWalletsData();
-      renderDids();
-      clearStatus();
-    } catch (err) {
-      setStatus(`프로필 저장 실패: ${err.message}`);
-    } finally {
-      saveBtn.disabled = false;
-    }
+  // 프로필 프리뷰
+  const filledFields = Object.entries(cardProfile).filter(([key, data]) => {
+    const val = String(data?.value || "").trim();
+    return val.length > 0 && key !== "hidden_basic_fields";
   });
-  form.appendChild(saveBtn);
-  wrapper.appendChild(form);
+
+  if (filledFields.length > 0) {
+    const preview = document.createElement("div");
+    preview.className = "profile-preview";
+
+    filledFields.slice(0, 3).forEach(([key, data]) => {
+      const tag = document.createElement("span");
+      tag.className = "profile-tag";
+      tag.textContent = `${data.label || key}: ${data.value}`;
+      preview.appendChild(tag);
+    });
+
+    if (filledFields.length > 3) {
+      const more = document.createElement("span");
+      more.className = "profile-tag";
+      more.textContent = `+${filledFields.length - 3}`;
+      preview.appendChild(more);
+    }
+    wrapper.appendChild(preview);
+  }
 
   // 세션 목록
   const sessionsPanel = document.createElement("div");
@@ -373,9 +600,7 @@ function createDidCard(wallet) {
     approvedTitle.className = "session-group-title";
     approvedTitle.innerHTML = "⏳ 승인 대기 중";
     approvedGroup.appendChild(approvedTitle);
-    didApproved.forEach((item) => {
-      approvedGroup.appendChild(createApprovedCard(item));
-    });
+    didApproved.forEach((item) => approvedGroup.appendChild(createApprovedCard(item)));
     sessionsPanel.appendChild(approvedGroup);
   }
 
@@ -386,13 +611,10 @@ function createDidCard(wallet) {
     activeTitle.className = "session-group-title";
     activeTitle.innerHTML = "✅ 연결된 서비스";
     activeGroup.appendChild(activeTitle);
-    didSessions.forEach((session) => {
-      activeGroup.appendChild(createSessionCard(session));
-    });
+    didSessions.forEach((session) => activeGroup.appendChild(createSessionCard(session)));
     sessionsPanel.appendChild(activeGroup);
   }
 
-  // 연결된 서비스가 없을 때
   if (didApproved.length === 0 && didSessions.length === 0) {
     const emptyMsg = document.createElement("div");
     emptyMsg.className = "empty-state";
@@ -406,13 +628,9 @@ function createDidCard(wallet) {
 
   wrapper.appendChild(sessionsPanel);
 
-  // 클릭으로 확장/축소
   header.addEventListener("click", () => {
-    if (expandedDids.has(wallet.did)) {
-      expandedDids.delete(wallet.did);
-    } else {
-      expandedDids.add(wallet.did);
-    }
+    if (expandedDids.has(wallet.did)) expandedDids.delete(wallet.did);
+    else expandedDids.add(wallet.did);
     renderDids();
   });
 
@@ -432,22 +650,31 @@ function renderDids() {
     didsEl.appendChild(empty);
     return;
   }
-  wallets.forEach((wallet) => didsEl.appendChild(createDidCard(wallet)));
+  wallets.forEach((wallet) => {
+    try {
+      didsEl.appendChild(createDidCard(wallet));
+    } catch (err) {
+      console.error("Failed to render DID card", wallet.did, err);
+    }
+  });
 }
+
+// ==================== 인증 요청 ====================
 
 async function getChallengeDraft(challenge) {
   const current = challengeDrafts.get(challenge.challenge_id);
-  if (current) {
-    return current;
-  }
+  if (current) return current;
 
   const availableDids = Array.isArray(challenge.available_dids) ? challenge.available_dids : [];
   const selectedDid = challenge.did_hint || availableDids[0] || wallets[0]?.did || null;
   const requestedClaims = Array.isArray(challenge.requested_claims) ? challenge.requested_claims : [];
+
+  const wallet = wallets.find(w => w.did === selectedDid);
   const policyClaims = selectedDid ? await getPolicy(selectedDid, challenge.service_id) : [];
+
   const selectedClaims = policyClaims.length > 0
     ? requestedClaims.filter((claim) => policyClaims.includes(claim))
-    : [...requestedClaims];
+    : requestedClaims.filter((claim) => !!getWalletClaimValue(wallet, claim));
 
   const draft = { did: selectedDid, claims: selectedClaims };
   challengeDrafts.set(challenge.challenge_id, draft);
@@ -460,7 +687,7 @@ async function createChallengeCard(challenge) {
 
   const header = document.createElement("div");
   header.className = "card-header";
-  
+
   const title = document.createElement("div");
   title.className = "service-name";
   title.textContent = challenge.service_id;
@@ -482,16 +709,14 @@ async function createChallengeCard(challenge) {
   availableDids.forEach((did) => {
     const option = document.createElement("option");
     option.value = did;
-    option.textContent = shortenDid(did);
+    const wallet = wallets.find(w => w.did === did);
+    const profile = wallet?.profile || {};
+    option.textContent = profile.nickname?.value || profile.name?.value || shortenDid(did);
     option.title = did;
-    if (did === draft.did) {
-      option.selected = true;
-    }
+    if (did === draft.did) option.selected = true;
     didSelect.appendChild(option);
   });
-  if (challenge.did_hint || availableDids.length <= 1) {
-    didSelect.disabled = true;
-  }
+  if (challenge.did_hint || availableDids.length <= 1) didSelect.disabled = true;
   wrapper.appendChild(didSelect);
 
   // Claims 선택
@@ -511,8 +736,11 @@ async function createChallengeCard(challenge) {
   };
 
   requestedClaims.forEach((claim) => {
+    const labelText = getClaimLabel(claim);
+
     const row = document.createElement("label");
     row.className = "claim-row";
+
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.value = claim;
@@ -521,9 +749,11 @@ async function createChallengeCard(challenge) {
       const selected = Array.from(claimList.querySelectorAll("input:checked")).map((el) => el.value);
       challengeDrafts.set(challenge.challenge_id, { did: didSelect.value, claims: selected });
     });
-    row.appendChild(checkbox);
+
     const text = document.createElement("span");
-    text.textContent = claim;
+    text.innerHTML = `${labelText} <span class="field-key">${claim}</span>`;
+
+    row.appendChild(checkbox);
     row.appendChild(text);
     claimList.appendChild(row);
   });
@@ -531,10 +761,11 @@ async function createChallengeCard(challenge) {
 
   didSelect.addEventListener("change", async () => {
     const nextDid = didSelect.value;
+    const wallet = wallets.find(w => w.did === nextDid);
     const policyClaims = await getPolicy(nextDid, challenge.service_id);
     const selectedClaims = policyClaims.length > 0
       ? requestedClaims.filter((claim) => policyClaims.includes(claim))
-      : [...requestedClaims];
+      : requestedClaims.filter((claim) => !!getWalletClaimValue(wallet, claim));
     challengeDrafts.set(challenge.challenge_id, { did: nextDid, claims: selectedClaims });
     applyClaims(selectedClaims);
   });
@@ -599,18 +830,11 @@ async function loadChallenges() {
     const challenges = Array.isArray(data?.challenges) ? data.challenges : [];
     const activeIds = new Set(challenges.map((c) => c.challenge_id));
     Array.from(challengeDrafts.keys()).forEach((challengeId) => {
-      if (!activeIds.has(challengeId)) {
-        challengeDrafts.delete(challengeId);
-      }
+      if (!activeIds.has(challengeId)) challengeDrafts.delete(challengeId);
     });
 
-    // 배지 업데이트
-    if (challenges.length > 0) {
-      pendingCountEl.textContent = challenges.length;
-      pendingCountEl.classList.remove("hidden");
-    } else {
-      pendingCountEl.classList.add("hidden");
-    }
+    pendingCountEl.textContent = challenges.length || 0;
+    pendingCountEl.classList.toggle("hidden", challenges.length === 0);
 
     listEl.innerHTML = "";
     if (challenges.length === 0) {
@@ -652,6 +876,7 @@ async function addDid() {
 }
 
 async function refreshAll() {
+  await loadProfileFields();
   await loadWalletsData();
   await loadSessionsData();
   await loadApprovedData();
@@ -667,6 +892,23 @@ async function boot() {
     await refreshAll();
   });
 }
+
+// ESC 키로 모달 닫기
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    closeProfileModal();
+    closeDeleteModal();
+  }
+});
+
+// 모달 외부 클릭으로 닫기
+profileModal.addEventListener("click", (e) => {
+  if (e.target === profileModal) closeProfileModal();
+});
+
+deleteModal.addEventListener("click", (e) => {
+  if (e.target === deleteModal) closeDeleteModal();
+});
 
 addDidBtn.addEventListener("click", addDid);
 boot();

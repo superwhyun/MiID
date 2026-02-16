@@ -287,14 +287,12 @@ async function getApproved() {
 
 async function getWalletProfile(did) {
   if (!did) {
-    return { did: null, name: null, email: null, nickname: null };
+    return { did: null, profile: {} };
   }
   const data = await fetchJson(`${WALLET_URL}/v1/wallets/by-did/${encodeURIComponent(did)}`);
   return {
     did: data.did || did,
-    name: data.name || null,
-    email: data.email || null,
-    nickname: data.nickname || null
+    profile: data.profile || {}
   };
 }
 
@@ -302,11 +300,8 @@ async function updateWalletProfile(did, profile) {
   if (!did) {
     throw new Error("wallet_did_not_ready");
   }
-  const payload = {
-    name: profile?.name || "",
-    email: profile?.email || "",
-    nickname: profile?.nickname || ""
-  };
+  // profile 객체를 { profile: ... } 형태로 래핑하여 서버 규약에 맞춤
+  const payload = { profile: { ...profile } };
   return fetchJson(`${WALLET_URL}/v1/wallets/by-did/${encodeURIComponent(did)}/profile`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -719,6 +714,40 @@ ipcMain.handle("challenge:deny", async (_event, payload) => {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ did })
   });
+});
+
+ipcMain.handle("wallets:delete", async (_event, payload) => {
+  const did = payload?.did;
+  if (!did) {
+    throw new Error("did_required");
+  }
+  dlog(`delete wallet did=${did}`);
+  const result = await fetchJson(`${WALLET_URL}/v1/wallets/by-did/${encodeURIComponent(did)}`, {
+    method: "DELETE"
+  });
+  await refreshWallets();
+  refreshTrayMenu();
+  connectEventStreams();
+  broadcastWalletsChanged();
+  return result;
+});
+
+ipcMain.handle("profile-fields:get", async () => {
+  try {
+    const configPath = path.join(__dirname, "..", "..", "config", "profile-fields.json");
+    if (fs.existsSync(configPath)) {
+      const fields = JSON.parse(fs.readFileSync(configPath, "utf8"));
+      return Array.isArray(fields) ? fields : [];
+    }
+  } catch (err) {
+    dlog(`profile-fields load error: ${err.message}`);
+  }
+  // 기본값
+  return [
+    { label: "이름", key: "name", type: "text", placeholder: "실명을 입력하세요" },
+    { label: "닉네임", key: "nickname", type: "text", placeholder: "표시될 이름" },
+    { label: "이메일", key: "email", type: "email", placeholder: "email@example.com" }
+  ];
 });
 
 app.whenReady().then(async () => {
