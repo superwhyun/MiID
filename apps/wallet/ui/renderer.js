@@ -3,6 +3,8 @@ const addDidBtn = document.getElementById("addDidBtn");
 const listEl = document.getElementById("list");
 const statusEl = document.getElementById("status");
 const didLabelEl = document.getElementById("didLabel");
+const pendingCountEl = document.getElementById("pendingCount");
+const identityCountEl = document.getElementById("identityCount");
 
 const challengeDrafts = new Map();
 const policyCache = new Map();
@@ -48,10 +50,29 @@ function setPolicy(did, serviceId, claims) {
   window.miid.setClaimPolicy({ did, serviceId, claims: normalized }).catch(() => {});
 }
 
+function shortenDid(did) {
+  if (!did || typeof did !== "string") return "-";
+  if (did.length <= 20) return did;
+  return did.slice(0, 12) + "..." + did.slice(-8);
+}
+
+function getInitials(name) {
+  if (!name) return "?";
+  return name.slice(0, 2).toUpperCase();
+}
+
 async function loadWalletsData() {
   const result = await window.miid.listWallets();
   wallets = Array.isArray(result?.wallets) ? result.wallets : [];
-  didLabelEl.textContent = wallets.length > 0 ? `${wallets.length} DID(s)` : "No DID";
+  
+  if (wallets.length > 0) {
+    didLabelEl.textContent = `${wallets.length}개의 아이덴티티`;
+    identityCountEl.textContent = wallets.length;
+    identityCountEl.classList.remove("hidden");
+  } else {
+    didLabelEl.textContent = "새로운 아이덴티티를 만들어보세요";
+    identityCountEl.classList.add("hidden");
+  }
 }
 
 async function loadSessionsData() {
@@ -94,19 +115,27 @@ function createClaimChip(claim, active, onToggle) {
 
 function createSessionCard(session) {
   const wrapper = document.createElement("div");
-  wrapper.className = "card";
+  wrapper.className = "session-card";
 
+  const header = document.createElement("div");
+  header.className = "card-header";
+  
   const title = document.createElement("div");
-  title.innerHTML = `<strong>${session.service_id}</strong>`;
-  wrapper.appendChild(title);
+  title.className = "service-name";
+  title.textContent = session.service_id;
+  header.appendChild(title);
+  wrapper.appendChild(header);
 
   const requestedClaims = Array.isArray(session.requested_claims) ? session.requested_claims : [];
   const approvedClaims = Array.isArray(session.approved_claims) ? session.approved_claims : [];
   const policyClaims = policyCache.get(policyKey(session.did, session.service_id));
   const selected = new Set(Array.isArray(policyClaims) && policyClaims.length > 0 ? policyClaims : approvedClaims);
 
+  const claimsSection = document.createElement("div");
+  claimsSection.className = "claims-section";
+  
   const chips = document.createElement("div");
-  chips.className = "claim-chip-group";
+  chips.className = "claim-chips";
   requestedClaims.forEach((claim) => {
     const chip = createClaimChip(claim, selected.has(claim), () => {
       if (selected.has(claim)) {
@@ -123,24 +152,31 @@ function createSessionCard(session) {
     chips.appendChild(chip);
   });
   if (requestedClaims.length > 0) {
-    wrapper.appendChild(chips);
+    claimsSection.appendChild(chips);
   }
+  wrapper.appendChild(claimsSection);
 
-  const risk = document.createElement("div");
-  risk.className = "meta";
-  risk.textContent = `Risk: ${session.risk_level}`;
-  wrapper.appendChild(risk);
-
-  const exp = document.createElement("div");
-  exp.className = "meta";
-  exp.textContent = `Expires: ${session.expires_at}`;
-  wrapper.appendChild(exp);
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  
+  // 위험도 표시
+  const riskLevel = session.risk_level || "medium";
+  const riskClass = riskLevel === "high" ? "risk-high" : riskLevel === "low" ? "risk-low" : "risk-medium";
+  const riskText = riskLevel === "high" ? "높음" : riskLevel === "low" ? "낮음" : "중간";
+  
+  meta.innerHTML = `
+    <span class="meta-item">
+      <span class="risk-badge ${riskClass}">보안 ${riskText}</span>
+    </span>
+    <span class="meta-item">⏰ ${session.expires_at || "만료 정보 없음"}까지</span>
+  `;
+  wrapper.appendChild(meta);
 
   const actions = document.createElement("div");
   actions.className = "actions";
   const revokeBtn = document.createElement("button");
-  revokeBtn.className = "revoke";
-  revokeBtn.textContent = "Revoke";
+  revokeBtn.className = "btn btn-secondary";
+  revokeBtn.innerHTML = "🔗 연결 해제";
   revokeBtn.onclick = async () => {
     try {
       await window.miid.revokeSession({ sessionId: session.session_id, did: session.did });
@@ -149,7 +185,7 @@ function createSessionCard(session) {
       renderDids();
       clearStatus();
     } catch (err) {
-      setStatus(`Revoke failed: ${err.message}`);
+      setStatus(`연결 해제 실패: ${err.message}`);
     }
   };
   actions.appendChild(revokeBtn);
@@ -160,41 +196,49 @@ function createSessionCard(session) {
 
 function createApprovedCard(item) {
   const wrapper = document.createElement("div");
-  wrapper.className = "card";
+  wrapper.className = "session-card";
 
+  const header = document.createElement("div");
+  header.className = "card-header";
+  
   const title = document.createElement("div");
-  title.innerHTML = `<strong>${item.service_id}</strong>`;
-  wrapper.appendChild(title);
+  title.className = "service-name";
+  title.textContent = item.service_id;
+  header.appendChild(title);
+  wrapper.appendChild(header);
 
   const claims = Array.isArray(item.approved_claims) ? item.approved_claims : [];
   if (claims.length > 0) {
+    const claimsSection = document.createElement("div");
+    claimsSection.className = "claims-section";
     const chips = document.createElement("div");
-    chips.className = "claim-chip-group";
+    chips.className = "claim-chips";
     claims.forEach((claim) => {
       const chip = document.createElement("span");
       chip.className = "claim-chip active";
       chip.textContent = claim;
       chips.appendChild(chip);
     });
-    wrapper.appendChild(chips);
+    claimsSection.appendChild(chips);
+    wrapper.appendChild(claimsSection);
   }
 
-  const exp = document.createElement("div");
-  exp.className = "meta";
-  exp.textContent = `Approved, waiting for service completion · Expires: ${item.expires_at}`;
-  wrapper.appendChild(exp);
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.innerHTML = `<span class="meta-item">⏳ 승인 완료 · ⏰ ${item.expires_at || "만료 정보 없음"}까지</span>`;
+  wrapper.appendChild(meta);
   return wrapper;
 }
 
 function createDidCard(wallet) {
   const wrapper = document.createElement("div");
-  wrapper.className = "card";
+  wrapper.className = `card did-card${expandedDids.has(wallet.did) ? " expanded" : ""}`;
 
   const header = document.createElement("div");
   header.className = "did-header";
 
-  const left = document.createElement("div");
-  left.className = "did-left";
+  const info = document.createElement("div");
+  info.className = "did-info";
 
   const didApproved = approvedByDid.get(wallet.did) || [];
   const didSessions = sessionsByDid.get(wallet.did) || [];
@@ -202,125 +246,174 @@ function createDidCard(wallet) {
   didApproved.forEach((item) => connectedServices.add(item.service_id));
   didSessions.forEach((item) => connectedServices.add(item.service_id));
 
-  const countBadge = document.createElement("span");
-  countBadge.className = "service-count";
-  countBadge.textContent = String(connectedServices.size);
+  // 아바타 (닉네임 이니셜 또는 이름)
+  const displayName = wallet.nickname || wallet.name || "나";
+  const avatar = document.createElement("div");
+  avatar.className = "did-avatar";
+  avatar.textContent = getInitials(displayName);
 
-  const toggleBtn = document.createElement("button");
-  toggleBtn.className = "did-toggle";
-  toggleBtn.innerHTML = `<strong>${wallet.did}</strong>`;
+  const details = document.createElement("div");
+  details.className = "did-details";
 
-  left.appendChild(countBadge);
-  left.appendChild(toggleBtn);
+  const nameEl = document.createElement("div");
+  nameEl.className = "did-name";
+  nameEl.textContent = displayName;
 
+  const addressEl = document.createElement("div");
+  addressEl.className = "did-address";
+  addressEl.textContent = shortenDid(wallet.did);
+  addressEl.title = wallet.did; // 툴팁에 전체 주소
+
+  details.appendChild(nameEl);
+  details.appendChild(addressEl);
+
+  info.appendChild(avatar);
+  info.appendChild(details);
+
+  const stats = document.createElement("div");
+  stats.className = "did-stats";
+
+  const serviceCount = connectedServices.size;
+  if (serviceCount > 0) {
+    const statBadge = document.createElement("span");
+    statBadge.className = "stat-badge active";
+    statBadge.innerHTML = `🔗 ${serviceCount}`;
+    stats.appendChild(statBadge);
+  }
+
+  // 설정 버튼
   const settingsBtn = document.createElement("button");
-  settingsBtn.className = "icon-btn light";
-  settingsBtn.title = "DID settings";
-  settingsBtn.textContent = "⚙";
+  settingsBtn.className = "settings-btn";
+  settingsBtn.innerHTML = "⚙️";
+  settingsBtn.title = "프로필 편집";
+  settingsBtn.onclick = (e) => {
+    e.stopPropagation();
+    const form = document.getElementById(`profile-${wallet.did}`);
+    form.classList.toggle("hidden");
+  };
+  stats.appendChild(settingsBtn);
 
-  header.appendChild(left);
-  header.appendChild(settingsBtn);
+  const expandIcon = document.createElement("span");
+  expandIcon.className = "did-expand-icon";
+  expandIcon.textContent = "▼";
+  stats.appendChild(expandIcon);
+
+  header.appendChild(info);
+  header.appendChild(stats);
   wrapper.appendChild(header);
 
-  const summary = document.createElement("div");
-  summary.className = "meta";
-  summary.textContent = `name=${wallet.name || "-"}, email=${wallet.email || "-"}, nickname=${wallet.nickname || "-"}`;
-  wrapper.appendChild(summary);
-
+  // 프로필 편집 영역 (설정 버튼으로 토글)
   const form = document.createElement("div");
-  form.className = "profile-grid hidden";
+  form.className = "did-profile hidden";
+  form.id = `profile-${wallet.did}`;
 
-  const nameLabel = document.createElement("label");
-  nameLabel.textContent = "Name";
-  const nameInput = document.createElement("input");
-  nameInput.type = "text";
-  nameInput.value = wallet.name || "";
-  nameLabel.appendChild(nameInput);
+  const profileGrid = document.createElement("div");
+  profileGrid.className = "profile-grid";
 
-  const emailLabel = document.createElement("label");
-  emailLabel.textContent = "Email";
-  const emailInput = document.createElement("input");
-  emailInput.type = "email";
-  emailInput.value = wallet.email || "";
-  emailLabel.appendChild(emailInput);
+  const nameField = document.createElement("div");
+  nameField.className = "profile-field";
+  nameField.innerHTML = `
+    <label>이름</label>
+    <input type="text" id="name-${wallet.did}" value="${wallet.name || ""}" placeholder="이름을 입력하세요">
+  `;
 
-  const nickLabel = document.createElement("label");
-  nickLabel.textContent = "Nickname";
-  const nickInput = document.createElement("input");
-  nickInput.type = "text";
-  nickInput.value = wallet.nickname || "";
-  nickLabel.appendChild(nickInput);
+  const emailField = document.createElement("div");
+  emailField.className = "profile-field";
+  emailField.innerHTML = `
+    <label>이메일</label>
+    <input type="email" id="email-${wallet.did}" value="${wallet.email || ""}" placeholder="이메일을 입력하세요">
+  `;
+
+  const nickField = document.createElement("div");
+  nickField.className = "profile-field";
+  nickField.innerHTML = `
+    <label>닉네임</label>
+    <input type="text" id="nick-${wallet.did}" value="${wallet.nickname || ""}" placeholder="닉네임을 입력하세요">
+  `;
+
+  profileGrid.appendChild(nameField);
+  profileGrid.appendChild(emailField);
+  profileGrid.appendChild(nickField);
+  form.appendChild(profileGrid);
 
   const saveBtn = document.createElement("button");
-  saveBtn.className = "save";
-  saveBtn.textContent = "Save Profile";
+  saveBtn.className = "btn btn-primary";
+  saveBtn.innerHTML = "💾 프로필 저장";
   saveBtn.addEventListener("click", async () => {
     saveBtn.disabled = true;
     try {
       await window.miid.updateProfile({
         did: wallet.did,
         profile: {
-          name: nameInput.value || "",
-          email: emailInput.value || "",
-          nickname: nickInput.value || ""
+          name: document.getElementById(`name-${wallet.did}`).value || "",
+          email: document.getElementById(`email-${wallet.did}`).value || "",
+          nickname: document.getElementById(`nick-${wallet.did}`).value || ""
         }
       });
       await loadWalletsData();
       renderDids();
       clearStatus();
     } catch (err) {
-      setStatus(`Profile update failed: ${err.message}`);
+      setStatus(`프로필 저장 실패: ${err.message}`);
     } finally {
       saveBtn.disabled = false;
     }
   });
-
-  form.appendChild(nameLabel);
-  form.appendChild(emailLabel);
-  form.appendChild(nickLabel);
   form.appendChild(saveBtn);
   wrapper.appendChild(form);
 
+  // 세션 목록
   const sessionsPanel = document.createElement("div");
   sessionsPanel.className = "did-sessions";
-  if (!expandedDids.has(wallet.did)) {
-    sessionsPanel.classList.add("hidden");
-  }
 
   if (didApproved.length > 0) {
+    const approvedGroup = document.createElement("div");
+    approvedGroup.className = "session-group";
     const approvedTitle = document.createElement("div");
-    approvedTitle.className = "subhead";
-    approvedTitle.textContent = "Approved (Waiting)";
-    sessionsPanel.appendChild(approvedTitle);
+    approvedTitle.className = "session-group-title";
+    approvedTitle.innerHTML = "⏳ 승인 대기 중";
+    approvedGroup.appendChild(approvedTitle);
     didApproved.forEach((item) => {
-      sessionsPanel.appendChild(createApprovedCard(item));
+      approvedGroup.appendChild(createApprovedCard(item));
     });
+    sessionsPanel.appendChild(approvedGroup);
   }
 
   if (didSessions.length > 0) {
+    const activeGroup = document.createElement("div");
+    activeGroup.className = "session-group";
     const activeTitle = document.createElement("div");
-    activeTitle.className = "subhead";
-    activeTitle.textContent = "Active Sessions";
-    sessionsPanel.appendChild(activeTitle);
+    activeTitle.className = "session-group-title";
+    activeTitle.innerHTML = "✅ 연결된 서비스";
+    activeGroup.appendChild(activeTitle);
     didSessions.forEach((session) => {
-      sessionsPanel.appendChild(createSessionCard(session));
+      activeGroup.appendChild(createSessionCard(session));
     });
+    sessionsPanel.appendChild(activeGroup);
+  }
+
+  // 연결된 서비스가 없을 때
+  if (didApproved.length === 0 && didSessions.length === 0) {
+    const emptyMsg = document.createElement("div");
+    emptyMsg.className = "empty-state";
+    emptyMsg.style.padding = "20px";
+    emptyMsg.innerHTML = `
+      <div class="empty-state-text">아직 연결된 서비스가 없어요</div>
+      <div class="empty-state-hint">새로운 요청이 오면 여기에 표시됩니다</div>
+    `;
+    sessionsPanel.appendChild(emptyMsg);
   }
 
   wrapper.appendChild(sessionsPanel);
 
-  toggleBtn.addEventListener("click", () => {
+  // 클릭으로 확장/축소
+  header.addEventListener("click", () => {
     if (expandedDids.has(wallet.did)) {
       expandedDids.delete(wallet.did);
     } else {
       expandedDids.add(wallet.did);
     }
     renderDids();
-  });
-
-  settingsBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    form.classList.toggle("hidden");
   });
 
   return wrapper;
@@ -330,8 +423,12 @@ function renderDids() {
   didsEl.innerHTML = "";
   if (wallets.length === 0) {
     const empty = document.createElement("div");
-    empty.className = "empty";
-    empty.textContent = "No DIDs yet.";
+    empty.className = "empty-state";
+    empty.innerHTML = `
+      <div class="empty-state-icon">👤</div>
+      <div class="empty-state-text">아이덴티티가 없어요</div>
+      <div class="empty-state-hint">우측 상단의 + 버튼을 눌러 새로 만들어보세요</div>
+    `;
     didsEl.appendChild(empty);
     return;
   }
@@ -361,25 +458,32 @@ async function createChallengeCard(challenge) {
   const wrapper = document.createElement("div");
   wrapper.className = "card";
 
+  const header = document.createElement("div");
+  header.className = "card-header";
+  
   const title = document.createElement("div");
-  title.innerHTML = `<strong>${challenge.service_id}</strong>`;
-  wrapper.appendChild(title);
+  title.className = "service-name";
+  title.textContent = challenge.service_id;
+  header.appendChild(title);
+  wrapper.appendChild(header);
 
   const requestedClaims = Array.isArray(challenge.requested_claims) ? challenge.requested_claims : [];
   const availableDids = Array.isArray(challenge.available_dids) ? challenge.available_dids : [];
   const draft = await getChallengeDraft(challenge);
 
-  const didRow = document.createElement("div");
-  didRow.className = "meta";
-  didRow.textContent = "Select DID:";
-  wrapper.appendChild(didRow);
+  // DID 선택
+  const didLabel = document.createElement("div");
+  didLabel.className = "claims-label";
+  didLabel.textContent = "아이덴티티 선택";
+  wrapper.appendChild(didLabel);
 
   const didSelect = document.createElement("select");
   didSelect.className = "did-select";
   availableDids.forEach((did) => {
     const option = document.createElement("option");
     option.value = did;
-    option.textContent = did;
+    option.textContent = shortenDid(did);
+    option.title = did;
     if (did === draft.did) {
       option.selected = true;
     }
@@ -390,13 +494,15 @@ async function createChallengeCard(challenge) {
   }
   wrapper.appendChild(didSelect);
 
-  const claimTitle = document.createElement("div");
-  claimTitle.className = "meta";
-  claimTitle.textContent = "Claimed data:";
-  wrapper.appendChild(claimTitle);
+  // Claims 선택
+  const claimLabel = document.createElement("div");
+  claimLabel.className = "claims-label";
+  claimLabel.textContent = "공유할 정보";
+  claimLabel.style.marginTop = "12px";
+  wrapper.appendChild(claimLabel);
 
   const claimList = document.createElement("div");
-  claimList.className = "claim-list";
+  claimList.className = "checkbox-list";
 
   const applyClaims = (claims) => {
     Array.from(claimList.querySelectorAll("input[type=checkbox]")).forEach((input) => {
@@ -433,17 +539,17 @@ async function createChallengeCard(challenge) {
     applyClaims(selectedClaims);
   });
 
-  const exp = document.createElement("div");
-  exp.className = "meta";
-  exp.textContent = `Expires: ${challenge.expires_at}`;
-  wrapper.appendChild(exp);
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.innerHTML = `<span class="meta-item">⏰ ${challenge.expires_at || "만료 정보 없음"}까지</span>`;
+  wrapper.appendChild(meta);
 
   const action = document.createElement("div");
   action.className = "actions";
 
   const approveBtn = document.createElement("button");
-  approveBtn.className = "approve";
-  approveBtn.textContent = "Approve";
+  approveBtn.className = "btn btn-primary";
+  approveBtn.innerHTML = "✓ 승인";
   approveBtn.onclick = async () => {
     const selectedDid = didSelect.value;
     const approvedClaims = Array.from(claimList.querySelectorAll("input:checked")).map((el) => el.value);
@@ -461,13 +567,13 @@ async function createChallengeCard(challenge) {
       renderDids();
       clearStatus();
     } catch (err) {
-      setStatus(`Approve failed: ${err.message}`);
+      setStatus(`승인 실패: ${err.message}`);
     }
   };
 
   const denyBtn = document.createElement("button");
-  denyBtn.className = "deny";
-  denyBtn.textContent = "Deny";
+  denyBtn.className = "btn btn-secondary";
+  denyBtn.innerHTML = "✕ 거절";
   denyBtn.onclick = async () => {
     const selectedDid = didSelect.value;
     try {
@@ -476,7 +582,7 @@ async function createChallengeCard(challenge) {
       await loadChallenges();
       clearStatus();
     } catch (err) {
-      setStatus(`Deny failed: ${err.message}`);
+      setStatus(`거절 실패: ${err.message}`);
     }
   };
 
@@ -498,11 +604,23 @@ async function loadChallenges() {
       }
     });
 
+    // 배지 업데이트
+    if (challenges.length > 0) {
+      pendingCountEl.textContent = challenges.length;
+      pendingCountEl.classList.remove("hidden");
+    } else {
+      pendingCountEl.classList.add("hidden");
+    }
+
     listEl.innerHTML = "";
     if (challenges.length === 0) {
       const empty = document.createElement("div");
-      empty.className = "empty";
-      empty.textContent = "No pending approval requests.";
+      empty.className = "empty-state";
+      empty.innerHTML = `
+        <div class="empty-state-icon">📭</div>
+        <div class="empty-state-text">새로운 요청이 없어요</div>
+        <div class="empty-state-hint">서비스에서 로그인을 요청하면 여기에 표시됩니다</div>
+      `;
       listEl.appendChild(empty);
       return;
     }
@@ -512,7 +630,7 @@ async function loadChallenges() {
       listEl.appendChild(card);
     }
   } catch (err) {
-    setStatus(`Pending load failed: ${err.message}`);
+    setStatus(`요청 로딩 실패: ${err.message}`);
   }
 }
 
@@ -527,7 +645,7 @@ async function addDid() {
     await loadChallenges();
     clearStatus();
   } catch (err) {
-    setStatus(`Create DID failed: ${err.message}`);
+    setStatus(`아이덴티티 생성 실패: ${err.message}`);
   } finally {
     addDidBtn.disabled = false;
   }

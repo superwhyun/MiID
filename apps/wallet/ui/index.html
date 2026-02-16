@@ -1,255 +1,658 @@
 <!doctype html>
-<html lang="en">
+<html lang="ko">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MiID Approvals</title>
+    <title>MiID Wallet</title>
     <style>
+      * {
+        box-sizing: border-box;
+      }
+      
       body {
         margin: 0;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        background: #f6f7fb;
-        color: #111827;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Pretendard", "Noto Sans KR", sans-serif;
+        background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+        color: #1e293b;
+        min-height: 100vh;
       }
+      
+      /* Header */
       header {
-        padding: 14px 16px;
-        background: #111827;
+        padding: 16px 20px;
+        background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
         color: white;
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 10px;
+        gap: 12px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.1);
       }
+      
       .header-left {
         min-width: 0;
       }
+      
       header h1 {
         margin: 0;
-        font-size: 16px;
-      }
-      header p {
-        margin: 6px 0 0;
-        font-size: 12px;
-        opacity: 0.9;
-        overflow-wrap: anywhere;
-      }
-      main {
-        padding: 12px;
-      }
-      h2 {
-        font-size: 13px;
-        margin: 12px 0 8px;
-        color: #374151;
-      }
-      h3.did-group-title {
-        font-size: 12px;
-        margin: 10px 0 6px;
-        color: #111827;
-      }
-      .card {
-        background: white;
-        border: 1px solid #e5e7eb;
-        border-radius: 10px;
-        padding: 12px;
-        margin-bottom: 10px;
-      }
-      .did-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 8px;
-      }
-      .did-left {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        min-width: 0;
-      }
-      .service-count {
-        min-width: 24px;
-        height: 24px;
-        border-radius: 999px;
-        background: #2563eb;
-        color: #ffffff;
-        font-size: 12px;
+        font-size: 18px;
         font-weight: 700;
-        display: inline-flex;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      
+      header h1::before {
+        content: "🛡️";
+        font-size: 20px;
+      }
+      
+      header p {
+        margin: 4px 0 0;
+        font-size: 13px;
+        opacity: 0.8;
+        overflow-wrap: anywhere;
+        color: #cbd5e1;
+      }
+      
+      .add-btn {
+        width: 40px;
+        height: 40px;
+        border-radius: 12px;
+        border: none;
+        background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+        color: white;
+        font-size: 24px;
+        font-weight: 300;
+        cursor: pointer;
+        display: flex;
         align-items: center;
         justify-content: center;
-        padding: 0 8px;
+        transition: all 0.2s ease;
+        box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
       }
-      .did-title {
+      
+      .add-btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 16px rgba(37, 99, 235, 0.4);
+      }
+      
+      .add-btn:active {
+        transform: translateY(0);
+      }
+      
+      .add-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+        transform: none;
+      }
+      
+      /* Main */
+      main {
+        padding: 20px;
+        max-width: 600px;
+        margin: 0 auto;
+      }
+      
+      /* Status */
+      #status {
         font-size: 13px;
-        overflow-wrap: anywhere;
+        color: #64748b;
+        margin-bottom: 16px;
+        padding: 10px 14px;
+        background: white;
+        border-radius: 10px;
+        border-left: 3px solid #3b82f6;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        display: none;
       }
-      .did-toggle {
-        width: 100%;
-        text-align: left;
-        background: transparent;
-        color: inherit;
-        padding: 0;
-        border: 0;
+      
+      #status:not(:empty) {
+        display: block;
       }
-      .meta {
-        font-size: 12px;
-        color: #6b7280;
-        margin-top: 6px;
+      
+      /* Section */
+      .section {
+        margin-bottom: 24px;
       }
-      .claim-list {
-        margin-top: 6px;
-        display: grid;
-        gap: 4px;
-      }
-      .claim-row {
+      
+      .section-header {
         display: flex;
         align-items: center;
-        gap: 6px;
-        font-size: 12px;
-        color: #1f2937;
+        justify-content: space-between;
+        margin-bottom: 12px;
       }
-      .claim-chip-group {
-        margin-top: 8px;
+      
+      .section-title {
+        font-size: 15px;
+        font-weight: 700;
+        color: #334155;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0;
+      }
+      
+      .section-title .icon {
+        font-size: 18px;
+      }
+      
+      .badge {
+        background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+        color: white;
+        font-size: 12px;
+        font-weight: 700;
+        padding: 4px 10px;
+        border-radius: 20px;
+        min-width: 24px;
+        text-align: center;
+      }
+      
+      .badge.green {
+        background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+      }
+      
+      .badge.orange {
+        background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+      }
+      
+      /* Cards */
+      .card {
+        background: white;
+        border-radius: 16px;
+        padding: 16px;
+        margin-bottom: 12px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.04), 0 0 1px rgba(0,0,0,0.08);
+        transition: all 0.2s ease;
+        border: 1px solid #f1f5f9;
+      }
+      
+      .card:hover {
+        box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+        transform: translateY(-1px);
+      }
+      
+      .card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+      }
+      
+      .service-name {
+        font-size: 15px;
+        font-weight: 700;
+        color: #1e293b;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      
+      .service-name::before {
+        content: "🔗";
+        font-size: 14px;
+      }
+      
+      /* Claims */
+      .claims-section {
+        margin: 12px 0;
+      }
+      
+      .claims-label {
+        font-size: 12px;
+        color: #64748b;
+        margin-bottom: 8px;
+        font-weight: 600;
+      }
+      
+      .claim-chips {
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
       }
+      
       .claim-chip {
-        border: 1px solid #d1d5db;
-        background: #f3f4f6;
-        color: #374151;
-        border-radius: 999px;
-        padding: 6px 10px;
-        font-size: 12px;
-        font-weight: 600;
-      }
-      .claim-chip.active {
-        background: #2563eb;
-        border-color: #1d4ed8;
-        color: #ffffff;
-      }
-      .actions {
-        margin-top: 10px;
-        display: flex;
-        gap: 8px;
-      }
-      .actions-row {
-        margin-bottom: 8px;
-        display: flex;
-        justify-content: flex-end;
-      }
-      button {
-        border: 0;
-        border-radius: 8px;
-        padding: 8px 10px;
-        cursor: pointer;
-        font-weight: 600;
-      }
-      .icon-btn {
-        width: 34px;
-        height: 34px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 8px;
-        border: 1px solid #1f2937;
-        background: #0f172a;
-        color: #ffffff;
-        font-size: 18px;
-        padding: 0;
-      }
-      .icon-btn.light {
-        border: 1px solid #d1d5db;
-        background: #ffffff;
-        color: #111827;
-      }
-      .approve {
-        background: #059669;
-        color: #fff;
-      }
-      .deny {
-        background: #ef4444;
-        color: #fff;
-      }
-      .revoke {
-        background: #111827;
-        color: #fff;
-      }
-      .save {
-        background: #2563eb;
-        color: #fff;
-      }
-      .empty {
-        color: #6b7280;
+        border: none;
+        background: #f1f5f9;
+        color: #475569;
+        border-radius: 20px;
+        padding: 6px 14px;
         font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        display: flex;
+        align-items: center;
+        gap: 6px;
       }
-      #status {
+      
+      .claim-chip:hover {
+        background: #e2e8f0;
+      }
+      
+      .claim-chip.active {
+        background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+        color: white;
+        box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+      }
+      
+      .claim-chip.active::before {
+        content: "✓";
+        font-size: 11px;
+      }
+      
+      /* Meta info */
+      .meta {
         font-size: 12px;
-        color: #4b5563;
-        margin-bottom: 10px;
-      }
-      .profile-grid {
-        display: grid;
-        gap: 8px;
+        color: #64748b;
         margin-top: 10px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
       }
-      .profile-grid label {
-        font-size: 12px;
-        color: #374151;
-        display: grid;
+      
+      .meta-item {
+        display: flex;
+        align-items: center;
         gap: 4px;
       }
-      .profile-grid input {
-        border: 1px solid #d1d5db;
-        border-radius: 8px;
-        padding: 8px 10px;
-        font-size: 13px;
+      
+      .risk-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 8px;
+        border-radius: 12px;
+        font-size: 11px;
+        font-weight: 700;
       }
-      .did-select {
-        margin-top: 6px;
-        width: 100%;
-        border: 1px solid #d1d5db;
-        border-radius: 8px;
-        padding: 8px 10px;
-        font-size: 13px;
-        background: #fff;
+      
+      .risk-low {
+        background: #dcfce7;
+        color: #166534;
       }
-      .hidden {
+      
+      .risk-medium {
+        background: #fef3c7;
+        color: #92400e;
+      }
+      
+      .risk-high {
+        background: #fee2e2;
+        color: #991b1b;
+      }
+      
+      /* Actions */
+      .actions {
+        margin-top: 14px;
+        display: flex;
+        gap: 10px;
+      }
+      
+      .btn {
+        border: none;
+        border-radius: 12px;
+        padding: 10px 16px;
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 13px;
+        transition: all 0.15s ease;
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+      }
+      
+      .btn:hover {
+        transform: translateY(-1px);
+      }
+      
+      .btn:active {
+        transform: translateY(0);
+      }
+      
+      .btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+        transform: none;
+      }
+      
+      .btn-primary {
+        background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+        color: white;
+        box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+      }
+      
+      .btn-primary:hover {
+        box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+      }
+      
+      .btn-danger {
+        background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+        color: white;
+        box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+      }
+      
+      .btn-danger:hover {
+        box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4);
+      }
+      
+      .btn-secondary {
+        background: #f1f5f9;
+        color: #475569;
+      }
+      
+      .btn-secondary:hover {
+        background: #e2e8f0;
+      }
+      
+      .btn-dark {
+        background: linear-gradient(135deg, #475569 0%, #334155 100%);
+        color: white;
+      }
+      
+      /* Empty state */
+      .empty-state {
+        text-align: center;
+        padding: 40px 20px;
+        color: #64748b;
+      }
+      
+      .empty-state-icon {
+        font-size: 48px;
+        margin-bottom: 12px;
+        opacity: 0.5;
+      }
+      
+      .empty-state-text {
+        font-size: 14px;
+        font-weight: 500;
+      }
+      
+      .empty-state-hint {
+        font-size: 12px;
+        color: #94a3b8;
+        margin-top: 4px;
+      }
+      
+      /* DID Card */
+      .did-card {
+        cursor: pointer;
+      }
+      
+      .did-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      
+      .did-info {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+        flex: 1;
+      }
+      
+      .did-avatar {
+        width: 44px;
+        height: 44px;
+        border-radius: 14px;
+        background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+        font-weight: 700;
+        flex-shrink: 0;
+      }
+      
+      .did-details {
+        min-width: 0;
+        flex: 1;
+      }
+      
+      .did-name {
+        font-size: 15px;
+        font-weight: 700;
+        color: #1e293b;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      
+      .did-address {
+        font-size: 12px;
+        color: #64748b;
+        font-family: "SF Mono", "Consolas", monospace;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      
+      .did-stats {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      
+      .stat-badge {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 6px 12px;
+        background: #f1f5f9;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: 600;
+        color: #475569;
+      }
+      
+      .stat-badge.active {
+        background: #dcfce7;
+        color: #166534;
+      }
+      
+      .did-expand-icon {
+        font-size: 12px;
+        color: #94a3b8;
+        transition: transform 0.2s ease;
+      }
+      
+      .did-card.expanded .did-expand-icon {
+        transform: rotate(180deg);
+      }
+      
+      .did-profile {
+        margin-top: 16px;
+        padding-top: 16px;
+        border-top: 1px solid #f1f5f9;
         display: none;
       }
+      
+      .did-card.expanded .did-profile {
+        display: block;
+      }
+      
+      .profile-grid {
+        display: grid;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+      
+      .profile-field {
+        display: grid;
+        gap: 6px;
+      }
+      
+      .profile-field label {
+        font-size: 12px;
+        font-weight: 600;
+        color: #64748b;
+      }
+      
+      .profile-field input {
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 14px;
+        transition: all 0.15s ease;
+        background: #f8fafc;
+      }
+      
+      .profile-field input:focus {
+        outline: none;
+        border-color: #3b82f6;
+        background: white;
+        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+      }
+      
       .did-sessions {
-        margin-top: 10px;
-        border-top: 1px solid #e5e7eb;
-        padding-top: 10px;
+        margin-top: 16px;
+        display: none;
       }
-      .did-empty {
-        font-size: 12px;
-        color: #6b7280;
+      
+      .did-card.expanded .did-sessions {
+        display: block;
       }
-      .subhead {
-        margin: 8px 0 6px;
+      
+      .session-group {
+        margin-bottom: 16px;
+      }
+      
+      .session-group-title {
         font-size: 12px;
-        color: #374151;
         font-weight: 700;
+        color: #64748b;
+        margin: 0 0 10px 0;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      
+      .session-card {
+        background: #f8fafc;
+        border-radius: 12px;
+        padding: 14px;
+        margin-bottom: 10px;
+        border: 1px solid #e2e8f0;
+      }
+      
+      /* Checkbox row for pending */
+      .claim-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 0;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      
+      .claim-row input[type="checkbox"] {
+        width: 20px;
+        height: 20px;
+        accent-color: #2563eb;
+        cursor: pointer;
+      }
+      
+      /* Select */
+      .select-wrapper {
+        margin: 10px 0;
+      }
+      
+      .did-select {
+        width: 100%;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 14px;
+        background: #f8fafc;
+        cursor: pointer;
+        transition: all 0.15s ease;
+      }
+      
+      .did-select:focus {
+        outline: none;
+        border-color: #3b82f6;
+        background: white;
+        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+      }
+      
+      .did-select:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      
+      /* Hidden */
+      .hidden {
+        display: none !important;
+      }
+      
+      /* Settings button in DID card */
+      .settings-btn {
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        border: none;
+        background: transparent;
+        color: #64748b;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 16px;
+        transition: all 0.15s ease;
+        margin-left: 8px;
+      }
+      
+      .settings-btn:hover {
+        background: #f1f5f9;
+        color: #334155;
+      }
+      
+      /* Checkbox list */
+      .checkbox-list {
+        display: grid;
+        gap: 4px;
       }
     </style>
   </head>
   <body>
     <header>
       <div class="header-left">
-        <h1>MiID Wallet Approvals</h1>
-        <p id="didLabel"></p>
+        <h1>MiID Wallet</h1>
+        <p id="didLabel">내 아이덴티티를 관리하세요</p>
       </div>
-      <button id="addDidBtn" class="icon-btn" title="Add DID">+</button>
+      <button id="addDidBtn" class="add-btn" title="새 아이덴티티 추가">+</button>
     </header>
+    
     <main>
       <div id="status"></div>
-
-      <h2>Pending Requests</h2>
-      <div id="list"></div>
-
-      <h2>DIDs</h2>
-      <div id="dids"></div>
+      
+      <!-- 새로운 요청 -->
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title"><span class="icon">📬</span> 새로운 요청</h2>
+          <span id="pendingCount" class="badge hidden">0</span>
+        </div>
+        <div id="list"></div>
+      </section>
+      
+      <!-- 내 아이덴티티 -->
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title"><span class="icon">👤</span> 내 아이덴티티</h2>
+          <span id="identityCount" class="badge green hidden">0</span>
+        </div>
+        <div id="dids"></div>
+      </section>
     </main>
+    
     <script src="./renderer.js"></script>
   </body>
 </html>
