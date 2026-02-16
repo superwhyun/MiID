@@ -2,14 +2,52 @@ const path = require("path");
 const fs = require("fs");
 const { app, Tray, Menu, BrowserWindow, ipcMain, Notification, nativeImage } = require("electron");
 const { EventSource } = require("eventsource");
-const { startWalletServer } = require("../wallet/server");
+const { startWalletServer } = require("./server");
 
-const GATEWAY_URL = process.env.GATEWAY_URL || "http://localhost:14000";
-const WALLET_PORT = Number(process.env.WALLET_PORT || 17000);
+function getWalletDataDir() {
+  if (process.env.MIID_DATA_DIR) {
+    return process.env.MIID_DATA_DIR;
+  }
+  return path.join(app.getPath("userData"), "data");
+}
+
+function loadAppConfig() {
+  const candidates = [
+    process.env.MIID_CONFIG_PATH,
+    path.join(__dirname, "config.json"),
+    path.join(__dirname, "..", "..", "config", "wallet.config.json")
+  ].filter(Boolean);
+  for (const configPath of candidates) {
+    try {
+      if (!fs.existsSync(configPath)) {
+        continue;
+      }
+      const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+      return { config: parsed, configPath };
+    } catch (_err) {
+      // ignore invalid config and continue fallback
+    }
+  }
+  return { config: {}, configPath: null };
+}
+
+function normalizeUrl(url) {
+  if (!url || typeof url !== "string") {
+    return null;
+  }
+  return url.endsWith("/") ? url.slice(0, -1) : url;
+}
+
+const appConfigLoaded = loadAppConfig();
+const appConfig = appConfigLoaded.config;
+const configuredGatewayUrl = normalizeUrl(appConfig.gateway_url || appConfig.gatewayUrl);
+const GATEWAY_URL = normalizeUrl(process.env.GATEWAY_URL) || configuredGatewayUrl || "http://localhost:14000";
+const WALLET_PORT = Number(process.env.WALLET_PORT || appConfig.wallet_port || appConfig.walletPort || 17000);
 const WALLET_URL = process.env.WALLET_URL || `http://localhost:${WALLET_PORT}`;
 app.setName("MiID");
 const walletSignSecret = cryptoRandomSecret();
 const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
+const POPUP_ON_CHALLENGE = process.env.MIID_POPUP_ON_CHALLENGE !== "0";
 const singleInstanceLock = app.requestSingleInstanceLock();
 
 if (!singleInstanceLock) {
@@ -35,7 +73,7 @@ function cryptoRandomSecret() {
 
 function loadDidFromWalletData() {
   try {
-    const walletPath = path.join(__dirname, "..", "..", "data", "wallet.json");
+    const walletPath = path.join(getWalletDataDir(), "wallet.json");
     if (!fs.existsSync(walletPath)) {
       return null;
     }
@@ -180,12 +218,19 @@ async function ensureWalletDid() {
 
 function showApproveNotification(serviceId, scopes) {
   dlog(`notification service=${serviceId} scopes=${(scopes || []).join(",")}`);
-  const n = new Notification({
-    title: "MiID 승인 요청",
-    body: `${serviceId}가 ${scopes.join(", ")} 요청`
-  });
-  n.on("click", () => openWindow());
-  n.show();
+  if (POPUP_ON_CHALLENGE) {
+    openWindow();
+  }
+  try {
+    const n = new Notification({
+      title: "MiID 승인 요청",
+      body: `${serviceId}가 ${scopes.join(", ")} 요청`
+    });
+    n.on("click", () => openWindow());
+    n.show();
+  } catch (err) {
+    dlog(`notification failed: ${err.message}`);
+  }
 }
 
 function showAutoApprovedNotification(serviceId, scopes) {
@@ -223,7 +268,12 @@ function connectEventStream() {
         const scopes = data.payload.scopes || [];
         const challengeId = data.payload.challenge_id;
         dlog(`event challenge_created service=${serviceId} challenge=${challengeId}`);
-        const autoApprove = await shouldAutoApproveChallenge(serviceId, scopes);
+        let autoApprove = false;
+        try {
+          autoApprove = await shouldAutoApproveChallenge(serviceId, scopes);
+        } catch (err) {
+          dlog(`auto-approve check failed challenge=${challengeId} err=${err.message}`);
+        }
         if (autoApprove) {
           dlog(`auto-approve start challenge=${challengeId}`);
           showAutoApprovedNotification(serviceId, scopes);
@@ -302,12 +352,29 @@ function syncDidFromStore() {
   broadcastDidChanged();
 }
 
+function createTrayIcon() {
+  const svg = `
+<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18">
+  <path fill="black" d="M9 1.5l6 3v4.8c0 3.7-2.1 6.1-6 7.2-3.9-1.1-6-3.5-6-7.2V4.5l6-3z"/>
+  <circle cx="9" cy="8" r="2.2" fill="white"/>
+</svg>`.trim();
+  const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+  const icon = nativeImage.createFromDataURL(dataUrl);
+  icon.setTemplateImage(true);
+  return icon;
+}
+
 function createTray() {
-  tray = new Tray(nativeImage.createEmpty());
+  if (tray && !tray.isDestroyed()) {
+    dlog("tray already exists");
+    return;
+  }
+  tray = new Tray(createTrayIcon());
   tray.setTitle("MiID");
   tray.setToolTip("MiID Wallet Approvals");
   tray.on("click", () => openWindow());
   refreshTrayMenu();
+  dlog("tray created");
 }
 
 ipcMain.handle("context:get", async () => {
@@ -366,10 +433,19 @@ ipcMain.handle("challenge:deny", async (_event, challengeId) => {
 });
 
 app.whenReady().then(async () => {
+  if (process.env.MIID_HIDE_DOCK === "1") {
+    if (process.platform === "darwin" && typeof app.setActivationPolicy === "function") {
+      app.setActivationPolicy("accessory");
+    }
+    if (app.dock && typeof app.dock.hide === "function") {
+      app.dock.hide();
+    }
+  }
+  process.env.MIID_DATA_DIR = process.env.MIID_DATA_DIR || getWalletDataDir();
   process.env.WALLET_SIGN_SECRET = walletSignSecret;
   walletServer = startWalletServer({ port: WALLET_PORT });
   await ensureWalletDid();
-  dlog(`app ready did=${walletDid || "none"} gateway=${GATEWAY_URL}`);
+  dlog(`app ready did=${walletDid || "none"} gateway=${GATEWAY_URL} config=${appConfigLoaded.configPath || "none"}`);
   createTray();
   connectEventStream();
   didSyncTimer = setInterval(syncDidFromStore, 3000);
@@ -377,14 +453,18 @@ app.whenReady().then(async () => {
 
 app.on("second-instance", () => {
   dlog("second instance attempted; focusing existing window");
+  createTray();
   openWindow();
 });
 
 app.on("window-all-closed", (e) => {
-  e.preventDefault();
+  if (!app.isQuiting) {
+    e.preventDefault();
+  }
 });
 
 app.on("before-quit", () => {
+  app.isQuiting = true;
   if (didSyncTimer) {
     clearInterval(didSyncTimer);
   }

@@ -3,8 +3,7 @@
 로컬에서 다음을 동작시키는 최소 구현입니다.
 - Wallet 서버: DID 생성/공개키 조회/챌린지 서명
 - Auth Gateway 서버: 챌린지/검증/토큰/동의/보호 API
-- Service Backend/Frontend 데모: 승인 후 SSE로 인증 성공 수신
-- End-to-end 데모 스크립트
+- Service Backend/Frontend: 승인 후 SSE로 인증 성공 수신
 
 ## Run
 
@@ -13,35 +12,27 @@ cd /Users/whyun/workspace/MiID
 npm install
 ```
 
-터미널 1:
+지갑 앱(wallet + menubar):
 ```bash
 npm run start:wallet
 ```
 
-터미널 2:
+게이트웨이:
 ```bash
 npm run start:gateway
 ```
 
-한 번에 검증:
-```bash
-npm run demo:flow
-```
-
-메뉴바 앱 실행 (macOS):
-```bash
-npm run start:menubar
-```
-
-서버 + 메뉴바를 한 번에 실행:
-```bash
-npm run dev:desktop
-```
-
-서비스 데모 실행(브라우저 UI):
+서비스 실행(브라우저 UI):
 ```bash
 npm run start:service
 # open http://localhost:3000
+```
+
+디버그 모드:
+```bash
+npm run dev:wallet
+npm run dev:gaetway
+npm run dev:service
 ```
 
 승인 요청 자동 테스트:
@@ -74,7 +65,7 @@ npm run test:finalize  # 메뉴바에서 승인 후 최종 교환 -> Active
 - 메뉴바 앱이 Wallet 서버를 내부에서 함께 실행합니다.
 - 승인 요청 알림은 Gateway SSE(`GET /v1/wallet/events`)로 받기 때문에 주기 폴링을 사용하지 않습니다.
 - 메뉴바 화면에는 `Pending Requests`와 `Active Sessions(유효 인증 목록)`이 표시됩니다.
-- 개발 모드(`npm run dev:desktop*`)에서는 macOS 알림 설정 이름이 `Electron`으로 보일 수 있습니다.
+- 개발 모드(`npm run dev:*`)에서는 macOS 알림 설정 이름이 `Electron`으로 보일 수 있습니다.
 - `MiID` 이름으로 보이게 하려면 패키징된 앱으로 실행하세요.
 
 macOS 앱 패키징:
@@ -87,6 +78,13 @@ open dist/MiID-darwin-arm64/MiID.app
 - Gateway: `http://localhost:14000`
 - Wallet: `http://localhost:17000`
 - DID: `data/wallet.json`의 첫 번째 wallet DID (또는 `WALLET_DID` 환경변수)
+
+메뉴바 게이트웨이 설정 우선순위:
+1. `GATEWAY_URL` 환경변수
+2. `MIID_CONFIG_PATH`로 지정한 JSON 파일
+3. `apps/wallet/config.json` (패키징 시 포함 가능)
+4. `config/wallet.config.json` (개발 기본값)
+5. fallback: `http://localhost:14000`
 
 ## Default Ports
 - Wallet: `17000`

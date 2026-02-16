@@ -12,7 +12,7 @@ REDIRECT_URI="${REDIRECT_URI:-https://service-test.local/callback}"
 SCOPES="${SCOPES:-profile,email}"
 
 if [ ! -f "data/wallet.json" ]; then
-  echo "error: data/wallet.json not found. run npm run dev:desktop first."
+  echo "error: data/wallet.json not found. run npm run start:wallet first."
   exit 1
 fi
 

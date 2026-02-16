@@ -7,6 +7,8 @@ const PORT = process.env.GATEWAY_PORT || 14000;
 const DATA_DIR = path.join(__dirname, "..", "..", "data");
 const DATA_FILE = path.join(DATA_DIR, "gateway.json");
 const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
+const REQUIRE_WALLET_APPROVAL_FOR_REUSE = process.env.REQUIRE_WALLET_APPROVAL_FOR_REUSE !== "0";
+const REQUIRE_LOCAL_WALLET_READY = process.env.LOCAL_WALLET_REQUIRED !== "0";
 const SERVICE_REGISTRY = parseServiceRegistry();
 
 function dlog(message) {
@@ -410,6 +412,21 @@ app.post("/v1/auth/challenge", (req, res) => {
   if (!service) {
     return;
   }
+  if (REQUIRE_LOCAL_WALLET_READY) {
+    const localWalletReady = req.headers["x-local-wallet-ready"] === "1";
+    if (!localWalletReady) {
+      return res.status(409).json({
+        error: "wallet_local_required",
+        message: "Local wallet readiness check is required before challenge creation."
+      });
+    }
+    if (walletStreams.size === 0) {
+      return res.status(409).json({
+        error: "wallet_local_unreachable",
+        message: "No wallet is currently connected to gateway."
+      });
+    }
+  }
   const { service_id, client_id, redirect_uri, scopes, state, risk_action, did_hint, require_user_approval } = req.body || {};
   if (!client_id || !redirect_uri || !Array.isArray(scopes) || scopes.length === 0) {
     return res.status(400).json({ error: "invalid_request" });
@@ -422,6 +439,12 @@ app.post("/v1/auth/challenge", (req, res) => {
   }
   if (!service.redirect_uris.includes(redirect_uri)) {
     return res.status(403).json({ error: "redirect_uri_not_allowed" });
+  }
+  if (did_hint && REQUIRE_LOCAL_WALLET_READY && !walletStreams.has(did_hint)) {
+    return res.status(409).json({
+      error: "wallet_local_unreachable",
+      message: "Target wallet is not connected."
+    });
   }
 
   const store = readStore();
@@ -471,6 +494,12 @@ app.post("/v1/auth/reuse-session", (req, res) => {
   const service = authenticateServiceClient(req, res);
   if (!service) {
     return;
+  }
+  if (REQUIRE_WALLET_APPROVAL_FOR_REUSE) {
+    return res.status(403).json({
+      error: "wallet_approval_required",
+      message: "Session reuse is disabled until wallet approval is completed."
+    });
   }
   const { did, scopes } = req.body || {};
   if (!did || !Array.isArray(scopes) || scopes.length === 0) {

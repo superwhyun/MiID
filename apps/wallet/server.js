@@ -7,9 +7,18 @@ const PORT = Number(process.env.WALLET_PORT || 17000);
 function getSignSecret() {
   return process.env.WALLET_SIGN_SECRET || null;
 }
-const DATA_DIR = path.join(__dirname, "..", "..", "data");
-const DATA_FILE = path.join(DATA_DIR, "wallet.json");
 const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
+
+function getDataDir() {
+  if (process.env.MIID_DATA_DIR) {
+    return process.env.MIID_DATA_DIR;
+  }
+  return path.join(__dirname, "..", "..", "data");
+}
+
+function getDataFile() {
+  return path.join(getDataDir(), "wallet.json");
+}
 
 function dlog(message) {
   if (DEBUG_AUTH) {
@@ -18,21 +27,23 @@ function dlog(message) {
 }
 
 function ensureStore() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+  const dataDir = getDataDir();
+  const dataFile = getDataFile();
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
   }
-  if (!fs.existsSync(DATA_FILE)) {
-    fs.writeFileSync(DATA_FILE, JSON.stringify({ wallets: [], consents: [] }, null, 2));
+  if (!fs.existsSync(dataFile)) {
+    fs.writeFileSync(dataFile, JSON.stringify({ wallets: [], consents: [] }, null, 2));
   }
 }
 
 function readStore() {
   ensureStore();
-  return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+  return JSON.parse(fs.readFileSync(getDataFile(), "utf8"));
 }
 
 function writeStore(data) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+  fs.writeFileSync(getDataFile(), JSON.stringify(data, null, 2));
 }
 
 function nowIso() {

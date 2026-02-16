@@ -77,7 +77,11 @@
     if (body) options.body = JSON.stringify(body);
     const response = await fetch(`${API_BASE}${path}`, options);
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || data.message || "Request failed");
+    if (!response.ok) {
+      const err = new Error(data.message || data.error || "Request failed");
+      err.code = data.error || "request_failed";
+      throw err;
+    }
     return data;
   }
 
@@ -189,7 +193,11 @@
       showScreen("waiting");
       bindAuthStream(result.challenge_id);
     } catch (err) {
-      showError(elements.loginError, err.message);
+      if (err.code === "wallet_local_unreachable" || err.code === "wallet_local_required") {
+        showError(elements.loginError, "이 PC에서 MiID Wallet 앱을 실행한 뒤 다시 시도해주세요.");
+      } else {
+        showError(elements.loginError, err.message);
+      }
     } finally {
       setLoading(elements.btnLogin, false);
     }

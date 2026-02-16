@@ -113,3 +113,9 @@ stateDiagram-v2
 ## TODO
 
 - 서비스 식별자(`service_id`)를 향후 `service DID` 기반으로 전환 검토
+- 멀티테넌시 격리(tenant 경계 기반 subject/session/consent 분리)
+- 서비스 인증 강화(`private_key_jwt` 또는 mTLS, 키 회전)
+- DID resolver/신뢰앵커 기반 공개키 검증(데모 `did:miid` 보강)
+- 정책 엔진 분리(서비스별 승인 재사용 TTL, step-up, 리스크 룰)
+- 이벤트 전달 신뢰성 강화(SSE 재연/복구 또는 큐 기반 보장)
+- 감사/모니터링 체계(승인/거절/revoke 추적, 경보, 보관 정책)

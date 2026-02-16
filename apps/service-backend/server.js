@@ -1,11 +1,12 @@
 const express = require("express");
 const crypto = require("crypto");
-const fs = require("fs");
-const path = require("path");
 const { EventSource } = require("eventsource");
 
 const PORT = Number(process.env.PORT || 15000);
 const GATEWAY_URL = process.env.GATEWAY_URL || "http://localhost:14000";
+const LOCAL_WALLET_URL = process.env.LOCAL_WALLET_URL || process.env.WALLET_URL || "http://127.0.0.1:17000";
+const LOCAL_WALLET_REQUIRED = process.env.LOCAL_WALLET_REQUIRED !== "0";
+const LOCAL_WALLET_HEALTH_TIMEOUT_MS = Number(process.env.LOCAL_WALLET_HEALTH_TIMEOUT_MS || 1200);
 const SERVICE_ID = process.env.SERVICE_ID || "service-test";
 const CLIENT_ID = process.env.CLIENT_ID || process.env.SERVICE_CLIENT_ID || "web-client";
 const CLIENT_SECRET = process.env.CLIENT_SECRET || process.env.SERVICE_CLIENT_SECRET || "dev-service-secret";
@@ -34,19 +35,6 @@ function generateSessionId() {
 
 function nowIso() {
   return new Date().toISOString();
-}
-
-function getDefaultDidHint() {
-  try {
-    const walletPath = path.join(__dirname, "..", "..", "data", "wallet.json");
-    if (!fs.existsSync(walletPath)) {
-      return null;
-    }
-    const parsed = JSON.parse(fs.readFileSync(walletPath, "utf8"));
-    return parsed.wallets && parsed.wallets[0] ? parsed.wallets[0].did : null;
-  } catch (_err) {
-    return null;
-  }
 }
 
 function createSession(userData) {
@@ -127,13 +115,14 @@ function setChallengeState(challengeId, patch) {
   return next;
 }
 
-async function postJson(url, body) {
+async function postJson(url, body, extraHeaders = {}) {
   const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "X-Client-Id": CLIENT_ID,
-      "X-Client-Secret": CLIENT_SECRET
+      "X-Client-Secret": CLIENT_SECRET,
+      ...extraHeaders
     },
     body: JSON.stringify(body)
   });
@@ -151,6 +140,26 @@ async function getJson(url, headers = {}) {
     throw new Error(`${url} ${response.status} ${JSON.stringify(data)}`);
   }
   return data;
+}
+
+async function checkLocalWalletHealth() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LOCAL_WALLET_HEALTH_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${LOCAL_WALLET_URL}/health`, {
+      method: "GET",
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      return false;
+    }
+    const data = await response.json().catch(() => ({}));
+    return data && data.ok === true;
+  } catch (_err) {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function finalizeChallenge(challengeId, authorizationCode) {
@@ -347,47 +356,17 @@ app.get("/health", (_req, res) => {
 app.post("/auth/start", async (req, res) => {
   try {
     const { did } = req.body || {};
-    const didHint = did || getDefaultDidHint() || null;
+    const didHint = did || null;
     const requestedScopes = ["profile", "email"];
-
-    if (didHint) {
-      try {
-        const reused = await postJson(`${GATEWAY_URL}/v1/auth/reuse-session`, {
-          did: didHint,
-          scopes: requestedScopes
+    if (LOCAL_WALLET_REQUIRED) {
+      const localWalletOk = await checkLocalWalletHealth();
+      if (!localWalletOk) {
+        return res.status(409).json({
+          error: "wallet_local_unreachable",
+          message: "Local MiID Wallet is required on this device.",
+          action_hint: "open_wallet_on_this_device",
+          wallet_url: LOCAL_WALLET_URL
         });
-        const profile = await getJson(
-          `${GATEWAY_URL}/v1/services/${encodeURIComponent(SERVICE_ID)}/profile`,
-          { Authorization: `Bearer ${reused.access_token}` }
-        );
-        const session = createSession({
-          gatewaySessionId: reused.session_id || null,
-          accessToken: reused.access_token,
-          refreshToken: reused.refresh_token,
-          scope: reused.scope || requestedScopes.join(" "),
-          profile
-        });
-        try {
-          await postJson(`${GATEWAY_URL}/v1/wallet/notify-reuse`, {
-            did: didHint,
-            scopes: requestedScopes
-          });
-        } catch (notifyErr) {
-          dlog(`reuse notify failed: ${notifyErr.message}`);
-        }
-        res.setHeader(
-          "Set-Cookie",
-          `sid=${session.sid}; HttpOnly; SameSite=Lax; Max-Age=${SESSION_MAX_AGE_MS / 1000}; Path=/`
-        );
-        dlog(`auth start reused active session sid=${session.sid} gateway_session=${reused.session_id}`);
-        return res.status(201).json({
-          status: "active",
-          reused: true,
-          session_id: session.sid,
-          profile
-        });
-      } catch (reuseErr) {
-        dlog(`auth start no reusable session: ${reuseErr.message}`);
       }
     }
 
@@ -398,6 +377,8 @@ app.post("/auth/start", async (req, res) => {
       scopes: requestedScopes,
       did_hint: didHint,
       require_user_approval: true
+    }, {
+      "X-Local-Wallet-Ready": LOCAL_WALLET_REQUIRED ? "1" : "0"
     });
 
     const normalizedStatus = challenge.status === "verified" ? "approved" : (challenge.status || "pending");
@@ -577,6 +558,7 @@ app.post("/logout", (req, res) => {
 app.listen(PORT, () => {
   console.log(`service-backend listening on http://localhost:${PORT}`);
   console.log(`Gateway URL: ${GATEWAY_URL}`);
+  console.log(`Local wallet required: ${LOCAL_WALLET_REQUIRED ? "on" : "off"} (${LOCAL_WALLET_URL})`);
   console.log(`Auto finalize: ${AUTO_FINALIZE ? "on" : "off"}`);
   console.log(`Debug auth: ${DEBUG_AUTH ? "on" : "off"}`);
 });
