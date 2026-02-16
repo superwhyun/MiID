@@ -179,25 +179,22 @@ function openProfileModal(did) {
   fieldsContainer.id = "profileFieldsContainer";
   profileSection.appendChild(fieldsContainer);
 
-  // 통합 프로필 데이터 로드 (서버에서 마이그레이션된 데이터가 오므로 profile 객체 사용)
+  // 통합 프로필 데이터 로드
   const profile = wallet.profile || {};
+  const profileKeys = Object.keys(profile);
 
-  // 기본 필드(profileFields.json)와 저장된 정보를 병합하여 항상 보이게 함
-  const displayedKeys = new Set();
-
-  // 1. 기본 필드 먼저 추가
-  profileFields.forEach(f => {
-    const saved = profile[f.key];
-    addProfileFieldRow(f.label, f.key, saved?.value || "", fieldsContainer);
-    displayedKeys.add(f.key);
-  });
-
-  // 2. 추가된 커스텀 필드들 추가
-  Object.entries(profile).forEach(([key, data]) => {
-    if (!displayedKeys.has(key)) {
+  // 기본 필드(profileFields.json)는 프로필이 완전히 비어있는 경우(신규)에만 가이드로 보여줌
+  // 그 외의 경우(이미 데이터가 있는 경우)에는 저장된 필드만 보여주어 삭제가 유지되도록 함
+  if (profileKeys.length === 0) {
+    profileFields.forEach(f => {
+      addProfileFieldRow(f.label, f.key, "", fieldsContainer);
+    });
+  } else {
+    // 저장된 필드들만 표시 (사용자가 삭제한 기본 필드는 다시 나타나지 않음)
+    Object.entries(profile).forEach(([key, data]) => {
       addProfileFieldRow(data.label || key, key, data.value || "", fieldsContainer);
-    }
-  });
+    });
+  }
 
   profileModalBody.appendChild(profileSection);
 
