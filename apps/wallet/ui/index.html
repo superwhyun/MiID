@@ -15,6 +15,13 @@
         padding: 14px 16px;
         background: #111827;
         color: white;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .header-left {
+        min-width: 0;
       }
       header h1 {
         margin: 0;
@@ -24,6 +31,7 @@
         margin: 6px 0 0;
         font-size: 12px;
         opacity: 0.9;
+        overflow-wrap: anywhere;
       }
       main {
         padding: 12px;
@@ -33,6 +41,11 @@
         margin: 12px 0 8px;
         color: #374151;
       }
+      h3.did-group-title {
+        font-size: 12px;
+        margin: 10px 0 6px;
+        color: #111827;
+      }
       .card {
         background: white;
         border: 1px solid #e5e7eb;
@@ -40,15 +53,89 @@
         padding: 12px;
         margin-bottom: 10px;
       }
+      .did-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+      .did-left {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      .service-count {
+        min-width: 24px;
+        height: 24px;
+        border-radius: 999px;
+        background: #2563eb;
+        color: #ffffff;
+        font-size: 12px;
+        font-weight: 700;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 8px;
+      }
+      .did-title {
+        font-size: 13px;
+        overflow-wrap: anywhere;
+      }
+      .did-toggle {
+        width: 100%;
+        text-align: left;
+        background: transparent;
+        color: inherit;
+        padding: 0;
+        border: 0;
+      }
       .meta {
         font-size: 12px;
         color: #6b7280;
         margin-top: 6px;
       }
+      .claim-list {
+        margin-top: 6px;
+        display: grid;
+        gap: 4px;
+      }
+      .claim-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: #1f2937;
+      }
+      .claim-chip-group {
+        margin-top: 8px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .claim-chip {
+        border: 1px solid #d1d5db;
+        background: #f3f4f6;
+        color: #374151;
+        border-radius: 999px;
+        padding: 6px 10px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .claim-chip.active {
+        background: #2563eb;
+        border-color: #1d4ed8;
+        color: #ffffff;
+      }
       .actions {
         margin-top: 10px;
         display: flex;
         gap: 8px;
+      }
+      .actions-row {
+        margin-bottom: 8px;
+        display: flex;
+        justify-content: flex-end;
       }
       button {
         border: 0;
@@ -56,6 +143,24 @@
         padding: 8px 10px;
         cursor: pointer;
         font-weight: 600;
+      }
+      .icon-btn {
+        width: 34px;
+        height: 34px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 8px;
+        border: 1px solid #1f2937;
+        background: #0f172a;
+        color: #ffffff;
+        font-size: 18px;
+        padding: 0;
+      }
+      .icon-btn.light {
+        border: 1px solid #d1d5db;
+        background: #ffffff;
+        color: #111827;
       }
       .approve {
         background: #059669;
@@ -69,8 +174,8 @@
         background: #111827;
         color: #fff;
       }
-      .cancel {
-        background: #374151;
+      .save {
+        background: #2563eb;
         color: #fff;
       }
       .empty {
@@ -82,19 +187,68 @@
         color: #4b5563;
         margin-bottom: 10px;
       }
+      .profile-grid {
+        display: grid;
+        gap: 8px;
+        margin-top: 10px;
+      }
+      .profile-grid label {
+        font-size: 12px;
+        color: #374151;
+        display: grid;
+        gap: 4px;
+      }
+      .profile-grid input {
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 13px;
+      }
+      .did-select {
+        margin-top: 6px;
+        width: 100%;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 13px;
+        background: #fff;
+      }
+      .hidden {
+        display: none;
+      }
+      .did-sessions {
+        margin-top: 10px;
+        border-top: 1px solid #e5e7eb;
+        padding-top: 10px;
+      }
+      .did-empty {
+        font-size: 12px;
+        color: #6b7280;
+      }
+      .subhead {
+        margin: 8px 0 6px;
+        font-size: 12px;
+        color: #374151;
+        font-weight: 700;
+      }
     </style>
   </head>
   <body>
     <header>
-      <h1>MiID Wallet Approvals</h1>
-      <p id="didLabel"></p>
+      <div class="header-left">
+        <h1>MiID Wallet Approvals</h1>
+        <p id="didLabel"></p>
+      </div>
+      <button id="addDidBtn" class="icon-btn" title="Add DID">+</button>
     </header>
     <main>
-      <div id="status">Loading...</div>
+      <div id="status"></div>
+
       <h2>Pending Requests</h2>
       <div id="list"></div>
-      <h2>Active Sessions</h2>
-      <div id="sessions"></div>
+
+      <h2>DIDs</h2>
+      <div id="dids"></div>
     </main>
     <script src="./renderer.js"></script>
   </body>

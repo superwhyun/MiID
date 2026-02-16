@@ -54,6 +54,14 @@ function buildDid(walletId) {
   return `did:miid:${walletId}`;
 }
 
+function normalizeText(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function signPayload(privateKeyPem, payload) {
   return crypto.sign(null, Buffer.from(payload), privateKeyPem).toString("base64url");
 }
@@ -67,7 +75,7 @@ function createWalletApp() {
   });
 
   app.post("/v1/wallets", (req, res) => {
-  const { name } = req.body || {};
+  const { name, email, nickname } = req.body || {};
   const keyPair = crypto.generateKeyPairSync("ed25519");
   const publicKeyPem = keyPair.publicKey.export({ type: "spki", format: "pem" });
   const privateKeyPem = keyPair.privateKey.export({ type: "pkcs8", format: "pem" });
@@ -75,7 +83,9 @@ function createWalletApp() {
   const store = readStore();
   const wallet = {
     id: crypto.randomUUID(),
-    name: name || "user",
+    name: normalizeText(name) || "user",
+    email: normalizeText(email),
+    nickname: normalizeText(nickname),
     did: null,
     public_key_pem: publicKeyPem,
     private_key_pem: privateKeyPem,
@@ -89,8 +99,24 @@ function createWalletApp() {
   return res.status(201).json({
     wallet_id: wallet.id,
     did: wallet.did,
-    public_key_pem: wallet.public_key_pem
+    public_key_pem: wallet.public_key_pem,
+    name: wallet.name,
+    email: wallet.email || null,
+    nickname: wallet.nickname || null
   });
+  });
+
+  app.get("/v1/wallets", (_req, res) => {
+  const store = readStore();
+  const wallets = store.wallets.map((wallet) => ({
+    wallet_id: wallet.id,
+    did: wallet.did,
+    name: wallet.name,
+    email: wallet.email || null,
+    nickname: wallet.nickname || null,
+    created_at: wallet.created_at
+  }));
+  return res.json({ wallets });
   });
 
   app.get("/v1/wallets/:walletId", (req, res) => {
@@ -103,6 +129,8 @@ function createWalletApp() {
     wallet_id: wallet.id,
     did: wallet.did,
     name: wallet.name,
+    email: wallet.email || null,
+    nickname: wallet.nickname || null,
     public_key_pem: wallet.public_key_pem
   });
   });
@@ -120,7 +148,37 @@ function createWalletApp() {
     wallet_id: wallet.id,
     did: wallet.did,
     kid: `${wallet.did}#key-1`,
-    public_key_pem: wallet.public_key_pem
+    public_key_pem: wallet.public_key_pem,
+    name: wallet.name,
+    email: wallet.email || null,
+    nickname: wallet.nickname || null
+  });
+  });
+
+  app.put("/v1/wallets/by-did/:did/profile", (req, res) => {
+  const did = decodeURIComponent(req.params.did);
+  const store = readStore();
+  const wallet = store.wallets.find((w) => w.did === did);
+  if (!wallet) {
+    return res.status(404).json({ error: "wallet_not_found" });
+  }
+
+  const name = normalizeText(req.body?.name);
+  const email = normalizeText(req.body?.email);
+  const nickname = normalizeText(req.body?.nickname);
+
+  wallet.name = name || wallet.name || "user";
+  wallet.email = email;
+  wallet.nickname = nickname;
+  writeStore(store);
+
+  return res.json({
+    wallet_id: wallet.id,
+    did: wallet.did,
+    name: wallet.name,
+    email: wallet.email || null,
+    nickname: wallet.nickname || null,
+    updated_at: nowIso()
   });
   });
 

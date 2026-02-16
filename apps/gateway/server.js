@@ -116,6 +116,25 @@ function parseScopeText(scopeText) {
   return scopeText.split(" ").map((s) => s.trim()).filter(Boolean);
 }
 
+function normalizeRequestedClaims(requestedClaims) {
+  if (!Array.isArray(requestedClaims) || requestedClaims.length === 0) {
+    return [];
+  }
+  return [...new Set(requestedClaims)]
+    .filter((claim) => typeof claim === "string")
+    .map((claim) => claim.trim())
+    .filter((claim) => claim.length > 0);
+}
+
+function filterProfileClaims(profileClaims, approvedClaims) {
+  const approved = new Set(approvedClaims || []);
+  return {
+    name: approved.has("name") ? (profileClaims?.name || null) : null,
+    email: approved.has("email") ? (profileClaims?.email || null) : null,
+    nickname: approved.has("nickname") ? (profileClaims?.nickname || null) : null
+  };
+}
+
 function findOrCreateSubject(store, did, serviceId) {
   let row = store.subjects.find((s) => s.did === did && s.service_id === serviceId);
   if (row) {
@@ -127,16 +146,26 @@ function findOrCreateSubject(store, did, serviceId) {
   return subjectId;
 }
 
-function verifyWalletSignature(publicKeyPem, payload, signatureBase64Url) {
-  return crypto.verify(
-    null,
-    Buffer.from(payload),
-    publicKeyPem,
-    Buffer.from(signatureBase64Url, "base64url")
-  );
+function toSafeText(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
-async function fetchWalletPublicKey(walletUrl, did) {
+function normalizeWalletProfile(wallet) {
+  if (!wallet || typeof wallet !== "object") {
+    return { name: null, email: null, nickname: null };
+  }
+  return {
+    name: toSafeText(wallet.name),
+    email: toSafeText(wallet.email),
+    nickname: toSafeText(wallet.nickname)
+  };
+}
+
+async function fetchWalletByDid(walletUrl, did) {
   const res = await fetch(`${walletUrl}/v1/wallets/by-did/${encodeURIComponent(did)}`);
   if (!res.ok) {
     throw new Error(`wallet did lookup failed: ${res.status}`);
@@ -144,7 +173,78 @@ async function fetchWalletPublicKey(walletUrl, did) {
   return res.json();
 }
 
-function issueAuthCodeFromChallenge(store, challenge, did) {
+function buildDidDocumentFromWalletRecord(wallet) {
+  const did = wallet.did;
+  const keyId = wallet.kid || `${did}#key-1`;
+  return {
+    id: did,
+    verificationMethod: [
+      {
+        id: keyId,
+        type: "Ed25519VerificationKey2020",
+        controller: did,
+        publicKeyPem: wallet.public_key_pem
+      }
+    ],
+    authentication: [keyId]
+  };
+}
+
+function resolveVerificationMethod(didDocument, kidHint = null) {
+  const verificationMethods = Array.isArray(didDocument?.verificationMethod)
+    ? didDocument.verificationMethod
+    : [];
+  if (verificationMethods.length === 0) {
+    throw new Error("did_document_has_no_verification_method");
+  }
+  if (kidHint) {
+    const matched = verificationMethods.find((vm) => vm.id === kidHint);
+    if (matched) {
+      return matched;
+    }
+  }
+  const authRefs = Array.isArray(didDocument?.authentication) ? didDocument.authentication : [];
+  const firstAuthRef = authRefs.find((entry) => typeof entry === "string");
+  if (firstAuthRef) {
+    const matched = verificationMethods.find((vm) => vm.id === firstAuthRef);
+    if (matched) {
+      return matched;
+    }
+  }
+  return verificationMethods[0];
+}
+
+function verifyWithDidDocument(didDocument, payload, signatureBase64Url, kidHint = null) {
+  const method = resolveVerificationMethod(didDocument, kidHint);
+  if (!method.publicKeyPem) {
+    throw new Error("did_document_method_missing_public_key");
+  }
+  return crypto.verify(
+    null,
+    Buffer.from(payload),
+    method.publicKeyPem,
+    Buffer.from(signatureBase64Url, "base64url")
+  );
+}
+
+async function resolveDidDocument({ did, walletUrl }) {
+  if (!did || typeof did !== "string") {
+    throw new Error("did_required");
+  }
+  if (did.startsWith("did:miid:")) {
+    if (!walletUrl) {
+      throw new Error("wallet_url_required_for_did_miid");
+    }
+    const wallet = await fetchWalletByDid(walletUrl, did);
+    return {
+      didDocument: buildDidDocumentFromWalletRecord(wallet),
+      wallet
+    };
+  }
+  throw new Error(`unsupported_did_method:${did.split(":")[1] || "unknown"}`);
+}
+
+function issueAuthCodeFromChallenge(store, challenge, did, walletProfile = null, approvedClaims = null, walletUrl = null) {
   const subjectId = findOrCreateSubject(store, did, challenge.service_id);
   const activeConsents = store.consents
     .filter((c) => c.service_id === challenge.service_id && c.subject_id === subjectId && c.status === "active")
@@ -167,6 +267,10 @@ function issueAuthCodeFromChallenge(store, challenge, did) {
     consent_required: missing.length > 0,
     missing_scopes: missing,
     risk_action: challenge.risk_action,
+    requested_claims: challenge.requested_claims || [],
+    approved_claims: approvedClaims || challenge.requested_claims || [],
+    profile_claims: walletProfile,
+    wallet_url: walletUrl || null,
     expires_at: addMinutes(nowIso(), 2),
     used_at: null,
     created_at: nowIso()
@@ -427,7 +531,7 @@ app.post("/v1/auth/challenge", (req, res) => {
       });
     }
   }
-  const { service_id, client_id, redirect_uri, scopes, state, risk_action, did_hint, require_user_approval } = req.body || {};
+  const { service_id, client_id, redirect_uri, scopes, state, risk_action, did_hint, require_user_approval, requested_claims } = req.body || {};
   if (!client_id || !redirect_uri || !Array.isArray(scopes) || scopes.length === 0) {
     return res.status(400).json({ error: "invalid_request" });
   }
@@ -448,13 +552,16 @@ app.post("/v1/auth/challenge", (req, res) => {
   }
 
   const store = readStore();
+  const normalizedScopes = [...new Set(scopes)];
+  const normalizedRequestedClaims = normalizeRequestedClaims(requested_claims);
   const challenge = {
     id: crypto.randomUUID(),
     nonce: randomToken(18),
     service_id: service.service_id,
     client_id: service.client_id,
     redirect_uri,
-    scopes: [...new Set(scopes)],
+    scopes: normalizedScopes,
+    requested_claims: normalizedRequestedClaims,
     state: state || null,
     risk_action: risk_action || null,
     did_hint: did_hint || null,
@@ -473,7 +580,9 @@ app.post("/v1/auth/challenge", (req, res) => {
   const eventPayload = {
     challenge_id: challenge.id,
     service_id: challenge.service_id,
+    did_hint: challenge.did_hint,
     scopes: challenge.scopes,
+    requested_claims: challenge.requested_claims,
     expires_at: challenge.expires_at
   };
   if (challenge.did_hint) {
@@ -486,7 +595,8 @@ app.post("/v1/auth/challenge", (req, res) => {
     challenge_id: challenge.id,
     nonce: challenge.nonce,
     expires_at: challenge.expires_at,
-    status: challenge.status
+    status: challenge.status,
+    requested_claims: challenge.requested_claims
   });
 });
 
@@ -577,19 +687,23 @@ app.post("/v1/auth/verify", async (req, res) => {
       return res.status(401).json({ error: "challenge_expired" });
     }
 
-    const wallet = await fetchWalletPublicKey(wallet_url, did);
+    const resolved = await resolveDidDocument({ did, walletUrl: wallet_url });
+    const wallet = resolved.wallet;
+    const walletProfile = normalizeWalletProfile(wallet);
     const payload = toPayloadString({
       challenge_id: challenge.id,
       nonce: challenge.nonce,
       audience: challenge.client_id,
       expires_at: challenge.expires_at
     });
-    const ok = verifyWalletSignature(wallet.public_key_pem, payload, signature);
+    const ok = verifyWithDidDocument(resolved.didDocument, payload, signature);
     if (!ok) {
       return res.status(401).json({ error: "invalid_signature" });
     }
 
-    const authCode = issueAuthCodeFromChallenge(store, challenge, did);
+    const approvedClaims = normalizeRequestedClaims(challenge.requested_claims);
+    const filteredProfile = filterProfileClaims(walletProfile, approvedClaims);
+    const authCode = issueAuthCodeFromChallenge(store, challenge, did, filteredProfile, approvedClaims, wallet_url);
     writeStore(store);
 
     return res.json({
@@ -597,7 +711,8 @@ app.post("/v1/auth/verify", async (req, res) => {
       code_expires_at: authCode.expires_at,
       subject_id: authCode.subject_id,
       consent_required: authCode.consent_required,
-      missing_scopes: authCode.missing_scopes
+      missing_scopes: authCode.missing_scopes,
+      approved_claims: authCode.approved_claims
     });
   } catch (err) {
     return res.status(500).json({ error: "verify_failed", message: err.message });
@@ -643,6 +758,8 @@ app.get("/v1/wallet/challenges", (req, res) => {
       client_id: c.client_id,
       nonce: c.nonce,
       scopes: c.scopes,
+      did_hint: c.did_hint || null,
+      requested_claims: Array.isArray(c.requested_claims) ? c.requested_claims : [],
       risk_action: c.risk_action,
       expires_at: c.expires_at
     }));
@@ -663,6 +780,8 @@ app.get("/v1/wallet/sessions", (req, res) => {
       service_id: s.service_id,
       subject_id: s.subject_id,
       scope: s.scope,
+      requested_claims: Array.isArray(s.requested_claims) ? s.requested_claims : [],
+      approved_claims: s.approved_claims || [],
       risk_level: s.risk_level,
       expires_at: s.expires_at,
       created_at: s.created_at
@@ -687,6 +806,8 @@ app.get("/v1/wallet/approved", (req, res) => {
       redirect_uri: c.redirect_uri,
       subject_id: c.subject_id,
       scopes: c.scopes,
+      requested_claims: Array.isArray(c.requested_claims) ? c.requested_claims : [],
+      approved_claims: Array.isArray(c.approved_claims) ? c.approved_claims : [],
       expires_at: c.expires_at
     }));
   dlog(`wallet approved query did=${did} count=${approved.length}`);
@@ -783,7 +904,7 @@ app.delete("/v1/wallet/sessions/:sessionId", (req, res) => {
 
 app.post("/v1/wallet/challenges/:challengeId/approve", async (req, res) => {
   try {
-    const { did, signature, wallet_url } = req.body || {};
+    const { did, signature, wallet_url, approved_claims } = req.body || {};
     if (!did || !signature || !wallet_url) {
       return res.status(400).json({ error: "invalid_request" });
     }
@@ -806,21 +927,25 @@ app.post("/v1/wallet/challenges/:challengeId/approve", async (req, res) => {
       return res.status(401).json({ error: "challenge_expired" });
     }
 
-    const wallet = await fetchWalletPublicKey(wallet_url, did);
+    const resolved = await resolveDidDocument({ did, walletUrl: wallet_url });
+    const wallet = resolved.wallet;
+    const walletProfile = normalizeWalletProfile(wallet);
     const payload = toPayloadString({
       challenge_id: challenge.id,
       nonce: challenge.nonce,
       audience: challenge.client_id,
       expires_at: challenge.expires_at
     });
-    const ok = verifyWalletSignature(wallet.public_key_pem, payload, signature);
+    const ok = verifyWithDidDocument(resolved.didDocument, payload, signature);
     if (!ok) {
       return res.status(401).json({ error: "invalid_signature" });
     }
+    const approvedClaims = normalizeRequestedClaims(approved_claims);
+    const filteredProfile = filterProfileClaims(walletProfile, approvedClaims);
 
     const subjectId = findOrCreateSubject(store, did, challenge.service_id);
     upsertConsentForApproval(store, challenge.service_id, subjectId, challenge.scopes, "wallet_approve");
-    const authCode = issueAuthCodeFromChallenge(store, challenge, did);
+    const authCode = issueAuthCodeFromChallenge(store, challenge, did, filteredProfile, approvedClaims, wallet_url);
     writeStore(store);
     dlog(`challenge approved id=${challenge.id} did=${did} auth_code=${authCode.code}`);
     pushChallengeEvent(challenge.id, "challenge_verified", {
@@ -842,7 +967,8 @@ app.post("/v1/wallet/challenges/:challengeId/approve", async (req, res) => {
       authorization_code: authCode.code,
       subject_id: authCode.subject_id,
       consent_required: authCode.consent_required,
-      missing_scopes: authCode.missing_scopes
+      missing_scopes: authCode.missing_scopes,
+      approved_claims: authCode.approved_claims
     });
   } catch (err) {
     return res.status(500).json({ error: "approve_failed", message: err.message });
@@ -936,6 +1062,14 @@ app.post("/v1/token/exchange", (req, res) => {
   );
 
   if (existingSession) {
+    existingSession.profile_claims = authCode.profile_claims || existingSession.profile_claims || {
+      name: null,
+      email: null,
+      nickname: null
+    };
+    existingSession.approved_claims = authCode.approved_claims || existingSession.approved_claims || [];
+    existingSession.requested_claims = authCode.requested_claims || existingSession.requested_claims || [];
+    existingSession.wallet_url = authCode.wallet_url || existingSession.wallet_url || null;
     authCode.used_at = nowIso();
     writeStore(store);
     dlog(`token exchange reused session code=${code} session=${existingSession.id} did=${existingSession.did}`);
@@ -959,6 +1093,10 @@ app.post("/v1/token/exchange", (req, res) => {
     service_id: authCode.service_id,
     subject_id: authCode.subject_id,
     did: authCode.did,
+    requested_claims: authCode.requested_claims || [],
+    approved_claims: authCode.approved_claims || [],
+    profile_claims: authCode.profile_claims || { name: null, email: null, nickname: null },
+    wallet_url: authCode.wallet_url || null,
     risk_level: riskLevel,
     access_token: accessToken,
     refresh_token: refreshToken,
@@ -1098,12 +1236,18 @@ app.get("/v1/services/:serviceId/profile", requireBearer, (req, res) => {
   if (session.service_id !== req.params.serviceId) {
     return res.status(403).json({ error: "service_mismatch" });
   }
+  const approvedSet = new Set(Array.isArray(session.approved_claims) ? session.approved_claims : []);
   return res.json({
     service_id: session.service_id,
     subject_id: session.subject_id,
     did: session.did,
     scope: session.scope,
-    risk_level: session.risk_level
+    requested_claims: Array.isArray(session.requested_claims) ? session.requested_claims : [],
+    approved_claims: Array.isArray(session.approved_claims) ? session.approved_claims : [],
+    risk_level: session.risk_level,
+    name: approvedSet.has("name") ? (session.profile_claims?.name || null) : null,
+    email: approvedSet.has("email") ? (session.profile_claims?.email || null) : null,
+    nickname: approvedSet.has("nickname") ? (session.profile_claims?.nickname || null) : null
   });
 });
 

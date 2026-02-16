@@ -14,6 +14,10 @@ const REDIRECT_URI = process.env.REDIRECT_URI || process.env.SERVICE_REDIRECT_UR
 const SESSION_MAX_AGE_MS = Number(process.env.SESSION_MAX_AGE_MS || 3600000);
 const AUTO_FINALIZE = process.env.SERVICE_AUTO_FINALIZE !== "0";
 const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
+const REQUESTED_CLAIMS = (process.env.REQUESTED_CLAIMS || "name,email,nickname")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 const sessions = new Map();
 const gatewaySessionToLocalSid = new Map();
@@ -375,6 +379,7 @@ app.post("/auth/start", async (req, res) => {
       client_id: CLIENT_ID,
       redirect_uri: REDIRECT_URI,
       scopes: requestedScopes,
+      requested_claims: REQUESTED_CLAIMS,
       did_hint: didHint,
       require_user_approval: true
     }, {
@@ -536,12 +541,20 @@ app.get("/profile", (req, res) => {
   }
 
   const { profile, scope, expiresAt } = req.session;
+  const scopeText = scope || profile?.scope || "";
+  const approvedClaims = Array.isArray(profile?.approved_claims) ? profile.approved_claims : [];
+  const approvedSet = new Set(approvedClaims);
   return res.json({
     subject_id: profile?.subject_id || null,
     did: profile?.did || null,
     service_id: profile?.service_id || SERVICE_ID,
-    scope: scope || profile?.scope || null,
+    scope: scopeText || null,
+    requested_claims: Array.isArray(profile?.requested_claims) ? profile.requested_claims : [],
+    approved_claims: approvedClaims,
     risk_level: profile?.risk_level || "normal",
+    name: approvedSet.has("name") ? (profile?.name || null) : null,
+    email: approvedSet.has("email") ? (profile?.email || null) : null,
+    nickname: approvedSet.has("nickname") ? (profile?.nickname || null) : null,
     session_expires_at: expiresAt
   });
 });

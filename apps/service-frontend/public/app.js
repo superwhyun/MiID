@@ -26,8 +26,10 @@
     errorMessage: document.getElementById("error-message"),
     profileSubject: document.getElementById("profile-subject"),
     profileDid: document.getElementById("profile-did"),
+    profileName: document.getElementById("profile-name"),
+    profileEmail: document.getElementById("profile-email"),
+    profileNickname: document.getElementById("profile-nickname"),
     profileService: document.getElementById("profile-service"),
-    profileScope: document.getElementById("profile-scope"),
     profileRisk: document.getElementById("profile-risk")
   };
 
@@ -66,6 +68,16 @@
 
   function formatTime(isoString) {
     return new Date(isoString).toLocaleTimeString();
+  }
+
+  function renderProfile(profile) {
+    elements.profileSubject.textContent = truncateId(profile.subject_id);
+    elements.profileDid.textContent = profile.did;
+    elements.profileName.textContent = profile.name || "-";
+    elements.profileEmail.textContent = profile.email || "-";
+    elements.profileNickname.textContent = profile.nickname || "-";
+    elements.profileService.textContent = profile.service_id;
+    elements.profileRisk.textContent = profile.risk_level || "normal";
   }
 
   async function apiCall(method, path, body = null) {
@@ -134,11 +146,7 @@
       if (status === "active") {
         try {
           const profile = await completeLogin(challengeId);
-          elements.profileSubject.textContent = truncateId(profile.subject_id);
-          elements.profileDid.textContent = profile.did;
-          elements.profileService.textContent = profile.service_id;
-          elements.profileScope.textContent = profile.scope || "profile email";
-          elements.profileRisk.textContent = profile.risk_level || "normal";
+          renderProfile(profile);
           showScreen("success");
           bindSessionStream();
         } catch (err) {
@@ -176,11 +184,7 @@
     try {
       const result = await apiCall("POST", "/auth/start", {});
       if (result.status === "active" && result.profile) {
-        elements.profileSubject.textContent = truncateId(result.profile.subject_id);
-        elements.profileDid.textContent = result.profile.did;
-        elements.profileService.textContent = result.profile.service_id;
-        elements.profileScope.textContent = result.profile.scope || "profile email";
-        elements.profileRisk.textContent = result.profile.risk_level || "normal";
+        renderProfile(result.profile);
         showScreen("success");
         bindSessionStream();
         return;
@@ -246,11 +250,7 @@
   async function checkSession() {
     try {
       const profile = await apiCall("GET", "/profile");
-      elements.profileSubject.textContent = truncateId(profile.subject_id);
-      elements.profileDid.textContent = profile.did;
-      elements.profileService.textContent = profile.service_id;
-      elements.profileScope.textContent = profile.scope || "profile email";
-      elements.profileRisk.textContent = profile.risk_level || "normal";
+      renderProfile(profile);
       showScreen("success");
       bindSessionStream();
     } catch (_err) {
