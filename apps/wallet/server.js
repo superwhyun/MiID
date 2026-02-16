@@ -241,6 +241,7 @@ function createWalletApp() {
     }
 
     if (Object.keys(newProfile).length > 0) {
+      const cleanedProfile = {};
       // Standardize and clean nested values before saving
       Object.entries(newProfile).forEach(([key, data]) => {
         if (data && typeof data === "object") {
@@ -249,17 +250,21 @@ function createWalletApp() {
           while (val && typeof val === "object" && val.value !== undefined) {
             val = val.value;
           }
-          wallet.profile[key] = {
+          cleanedProfile[key] = {
             label: data.label || key,
             value: (val === undefined || val === null) ? "" : String(val)
           };
         } else {
           // If scalar, wrap it
-          wallet.profile[key] = { label: key, value: String(data || "") };
+          cleanedProfile[key] = { label: key, value: String(data || "") };
         }
       });
+      wallet.profile = cleanedProfile; // Entirely replace to support deletion
+    } else if (body.profile && typeof body.profile === "object") {
+      // Handle explicit empty profile update
+      wallet.profile = {};
     } else {
-      // Legacy fallback for partial fields
+      // Legacy fallback for partial fields - keeping merge behavior for legacy partial updates
       if (body.name !== undefined) wallet.profile.name = { label: "이름", value: String(body.name || "user") };
       if (body.email !== undefined) wallet.profile.email = { label: "이메일", value: String(body.email || "") };
       if (body.nickname !== undefined) wallet.profile.nickname = { label: "닉네임", value: String(body.nickname || "") };
