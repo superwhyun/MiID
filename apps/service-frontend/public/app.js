@@ -2,69 +2,27 @@
   "use strict";
 
   const API_BASE = "/api";
-  let currentChallengeId = null;
-  let authStream = null;
-  let sessionStream = null;
-
-  const screens = {
-    login: document.getElementById("screen-login"),
-    waiting: document.getElementById("screen-waiting"),
-    success: document.getElementById("screen-success"),
-    error: document.getElementById("screen-error"),
-    manage: document.getElementById("screen-manage")
-  };
+  const servicesState = new Map(); // Stores state for each service: { authStream, challengeId, profile, status }
 
   const elements = {
-    btnLogin: document.getElementById("btn-login"),
-    btnCancel: document.getElementById("btn-cancel"),
-    btnLogout: document.getElementById("btn-logout"),
-    btnRetry: document.getElementById("btn-retry"),
-    loginError: document.getElementById("login-error"),
-    challengeId: document.getElementById("challenge-id"),
-    challengeStatus: document.getElementById("challenge-status"),
-    challengeExpires: document.getElementById("challenge-expires"),
-    progressFill: document.getElementById("progress-fill"),
-    errorMessage: document.getElementById("error-message"),
-    profileSubject: document.getElementById("profile-subject"),
-    profileDid: document.getElementById("profile-did"),
-    profileService: document.getElementById("profile-service"),
-    profileRisk: document.getElementById("profile-risk"),
-    btnManage: document.getElementById("btn-manage"),
-    btnSaveManage: document.getElementById("btn-save-manage"),
-    btnCloseManage: document.getElementById("btn-close-manage"),
+    screenDeck: document.getElementById("screen-deck"),
+    servicesGrid: document.getElementById("services-grid"),
+    btnAddService: document.getElementById("btn-add-service"),
+
+    // Modal elements
+    modalManage: document.getElementById("modal-manage"),
+    inputOriginalId: document.getElementById("manage-id-original"),
     inputServiceId: document.getElementById("input-service-id"),
     inputServiceName: document.getElementById("input-service-name"),
     inputFields: document.getElementById("input-fields"),
+    btnSaveManage: document.getElementById("btn-save-manage"),
+    btnCloseManage: document.getElementById("btn-close-manage"),
     manageError: document.getElementById("manage-error")
   };
 
-  function showScreen(screenName) {
-    Object.values(screens).forEach((s) => s.classList.remove("active"));
-    screens[screenName].classList.add("active");
-  }
+  const cardTemplate = document.getElementById("service-card-template");
 
-  function setLoading(button, loading) {
-    const textEl = button.querySelector(".btn-text");
-    const loadingEl = button.querySelector(".btn-loading");
-    if (loading) {
-      button.disabled = true;
-      if (textEl) textEl.classList.add("hidden");
-      if (loadingEl) loadingEl.classList.remove("hidden");
-    } else {
-      button.disabled = false;
-      if (textEl) textEl.classList.remove("hidden");
-      if (loadingEl) loadingEl.classList.add("hidden");
-    }
-  }
-
-  function showError(element, message) {
-    element.textContent = message;
-    element.classList.remove("hidden");
-  }
-
-  function hideError(element) {
-    element.classList.add("hidden");
-  }
+  // --- Utilities ---
 
   function truncateId(id) {
     if (!id || id.length <= 16) return id;
@@ -75,34 +33,6 @@
     return new Date(isoString).toLocaleTimeString();
   }
 
-  function renderProfile(profile) {
-    elements.profileSubject.textContent = truncateId(profile.subject_id);
-    elements.profileDid.textContent = profile.did;
-    elements.profileService.textContent = profile.service_id;
-    elements.profileRisk.textContent = profile.risk_level || "normal";
-
-    // 동적 클레임 렌더링 - 요청한 목록 기준으로 표시
-    const dynamicContainer = document.getElementById("profile-dynamic-claims");
-    if (dynamicContainer) {
-      dynamicContainer.innerHTML = "";
-      const requestedClaims = profile.requested_claims || [];
-      const approvedSet = new Set(profile.approved_claims || []);
-      requestedClaims.forEach((claim) => {
-        const value = profile[claim];
-        const isApproved = approvedSet.has(claim);
-        const displayValue = (value !== undefined && value !== null) ? value : "-";
-        const row = document.createElement("div");
-        row.className = "detail-row";
-        const statusClass = isApproved ? "" : ' style="color:#999;"';
-        row.innerHTML = `<span class="label">${claim}:</span><span class="value"${statusClass}>${displayValue}</span>`;
-        dynamicContainer.appendChild(row);
-      });
-      if (requestedClaims.length === 0) {
-        dynamicContainer.innerHTML = '<div class="detail-row"><span class="value" style="color:#888;">요청된 클레임 없음</span></div>';
-      }
-    }
-  }
-
   async function apiCall(method, path, body = null) {
     const options = {
       method,
@@ -111,7 +41,7 @@
     };
     if (body) options.body = JSON.stringify(body);
     const response = await fetch(`${API_BASE}${path}`, options);
-    const data = await response.json();
+    const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const err = new Error(data.message || data.error || "Request failed");
       err.code = data.error || "request_failed";
@@ -120,198 +50,314 @@
     return data;
   }
 
-  async function completeLogin(challengeId) {
-    const result = await apiCall("POST", `/auth/complete/${challengeId}`, {});
-    return result.profile;
-  }
+  // --- Card Management ---
 
-  function bindSessionStream() {
-    if (sessionStream) {
-      sessionStream.close();
-      sessionStream = null;
-    }
-    sessionStream = new EventSource(`${API_BASE}/session/stream`);
-    sessionStream.addEventListener("force_logout", () => {
-      if (sessionStream) {
-        sessionStream.close();
-        sessionStream = null;
+  function updateCardUI(serviceId) {
+    const card = document.querySelector(`.service-card[data-service-id="${serviceId}"]`);
+    if (!card) return;
+
+    const state = servicesState.get(serviceId);
+    const config = state.config;
+
+    // Update Header
+    const badge = card.querySelector(".status-badge");
+    badge.textContent = config.registered ? "Registered" : "Unregistered";
+    badge.className = `status-badge ${config.registered ? "registered" : "unregistered"}`;
+
+    // Update Body
+    card.querySelector(".service-name-display").textContent = config.service_name || config.service_id;
+    card.querySelector(".service-id-display").textContent = config.service_id;
+
+    // Update States
+    card.querySelectorAll(".state").forEach(s => s.classList.add("hidden"));
+
+    if (state.profile) {
+      const successState = card.querySelector(".state-success");
+      successState.classList.remove("hidden");
+      successState.querySelector(".profile-subject-mini").textContent = truncateId(state.profile.subject_id);
+      successState.querySelector(".profile-did-mini").textContent = truncateId(state.profile.did);
+      successState.querySelector(".profile-risk-mini").textContent = state.profile.risk_level || "normal";
+      successState.querySelector(".profile-service-mini").textContent = state.profile.service_id;
+
+      const claimsContainer = successState.querySelector(".profile-claims-mini");
+      claimsContainer.innerHTML = "";
+      const requestedClaims = state.profile.requested_claims || [];
+      const approvedClaims = new Set(state.profile.approved_claims || []);
+      requestedClaims.forEach(claim => {
+        const tag = document.createElement("div");
+        const isApproved = approvedClaims.has(claim);
+        tag.className = isApproved ? "claim-tag" : "claim-tag denied";
+        tag.setAttribute("data-key", claim.toUpperCase());
+        tag.textContent = isApproved ? (state.profile[claim] || "-") : "-";
+        claimsContainer.appendChild(tag);
+      });
+    } else if (state.error) {
+      const errorState = card.querySelector(".state-error");
+      errorState.classList.remove("hidden");
+      errorState.querySelector(".error-text").textContent = state.error;
+    } else if (state.challengeId) {
+      const waitingState = card.querySelector(".state-waiting");
+      waitingState.classList.remove("hidden");
+      waitingState.querySelector(".challenge-expires").textContent = state.expiresAt ? formatTime(state.expiresAt) : "-";
+    } else {
+      const initialState = card.querySelector(".state-initial");
+      initialState.classList.remove("hidden");
+
+      const btnLogin = initialState.querySelector(".btn-login");
+      const btnRegister = initialState.querySelector(".btn-register");
+
+      if (config.registered) {
+        btnLogin.classList.remove("hidden");
+        btnRegister.classList.add("hidden");
+      } else {
+        btnLogin.classList.add("hidden");
+        btnRegister.classList.remove("hidden");
       }
-      currentChallengeId = null;
-      elements.errorMessage.textContent = "세션이 Wallet에서 revoke 되어 로그아웃되었습니다.";
-      showScreen("error");
-    });
-    sessionStream.onerror = () => {
-      // keep default reconnect behavior
-    };
-  }
-
-  function updateWaitingStatus(status) {
-    elements.challengeStatus.textContent = status.charAt(0).toUpperCase() + status.slice(1);
-    elements.challengeStatus.className = `value status-${status}`;
-  }
-
-  function bindAuthStream(challengeId) {
-    if (authStream) {
-      authStream.close();
-      authStream = null;
     }
-    authStream = new EventSource(`${API_BASE}/auth/stream/${encodeURIComponent(challengeId)}`);
+  }
+
+  function createCard(config) {
+    const clone = cardTemplate.content.cloneNode(true);
+    const card = clone.querySelector(".service-card");
+    card.dataset.serviceId = config.service_id;
+
+    servicesState.set(config.service_id, { config, status: "initial" });
+    elements.servicesGrid.appendChild(clone);
+    updateCardUI(config.service_id);
+  }
+
+  async function loadServices() {
+    try {
+      const services = await apiCall("GET", "/services");
+      // Don't clear servicesState, just update configs/status
+      services.forEach(config => {
+        if (servicesState.has(config.service_id)) {
+          const state = servicesState.get(config.service_id);
+          state.config = config;
+        } else {
+          createCard(config);
+        }
+      });
+      // Remove stale ones
+      const newIds = new Set(services.map(s => s.service_id));
+      for (const id of servicesState.keys()) {
+        if (!newIds.has(id)) {
+          const card = document.querySelector(`.service-card[data-service-id="${id}"]`);
+          if (card) card.remove();
+          servicesState.delete(id);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to load services", err);
+    }
+  }
+
+  // --- Auth Logic ---
+
+  function bindAuthStream(serviceId, challengeId) {
+    const state = servicesState.get(serviceId);
+    if (state.authStream) state.authStream.close();
+
+    state.authStream = new EventSource(`${API_BASE}/auth/stream/${encodeURIComponent(challengeId)}`);
 
     const handlePayload = async (event) => {
       const data = JSON.parse(event.data);
       const status = data.payload.status;
-      updateWaitingStatus(status);
 
-      if (status === "approved") {
-        // wait for backend finalize
-        return;
-      }
       if (status === "active") {
         try {
-          const profile = await completeLogin(challengeId);
-          renderProfile(profile);
-          showScreen("success");
-          bindSessionStream();
+          const result = await apiCall("POST", `/auth/complete/${challengeId}`, {});
+          state.profile = result.profile;
+          state.challengeId = null;
+          state.authStream.close();
+          updateCardUI(serviceId);
+          // Bind session stream for this specific card
+          bindSessionStream(serviceId);
         } catch (err) {
-          elements.errorMessage.textContent = `Complete login failed: ${err.message}`;
-          showScreen("error");
+          state.error = err.message;
+          updateCardUI(serviceId);
         }
-        authStream.close();
-      } else if (status === "denied") {
-        elements.errorMessage.textContent = "로그인 요청이 Wallet에서 거부되었습니다.";
-        showScreen("error");
-        authStream.close();
-      } else if (status === "expired") {
-        elements.errorMessage.textContent = "로그인 요청이 만료되었습니다. 다시 시도해주세요.";
-        showScreen("error");
-        authStream.close();
-      } else if (status === "error") {
-        elements.errorMessage.textContent = data.payload.error || "인증 처리 중 오류가 발생했습니다.";
-        showScreen("error");
-        authStream.close();
+      } else if (["denied", "expired", "error"].includes(status)) {
+        state.error = data.payload.error || `Auth ${status}`;
+        state.challengeId = null;
+        state.authStream.close();
+        updateCardUI(serviceId);
       }
     };
 
-    authStream.addEventListener("snapshot", handlePayload);
-    authStream.addEventListener("approved", handlePayload);
-    authStream.addEventListener("active", handlePayload);
-    authStream.addEventListener("denied", handlePayload);
-    authStream.addEventListener("expired", handlePayload);
-    authStream.addEventListener("error", handlePayload);
+    state.authStream.addEventListener("snapshot", handlePayload);
+    state.authStream.addEventListener("approved", handlePayload);
+    state.authStream.addEventListener("active", handlePayload);
+    state.authStream.addEventListener("denied", handlePayload);
+    state.authStream.addEventListener("expired", handlePayload);
+    state.authStream.addEventListener("error", handlePayload);
   }
 
-  async function startLogin() {
-    hideError(elements.loginError);
-    setLoading(elements.btnLogin, true);
+  async function startLogin(serviceId) {
+    const state = servicesState.get(serviceId);
+    state.error = null;
+    updateCardUI(serviceId);
 
     try {
-      const result = await apiCall("POST", "/auth/start", {});
+      const result = await apiCall("POST", "/auth/start", { service_id: serviceId });
       if (result.status === "active" && result.profile) {
-        renderProfile(result.profile);
-        showScreen("success");
-        bindSessionStream();
-        return;
-      }
-      currentChallengeId = result.challenge_id;
-      elements.challengeId.textContent = truncateId(result.challenge_id);
-      elements.challengeExpires.textContent = formatTime(result.expires_at);
-      elements.progressFill.style.width = "100%";
-      updateWaitingStatus("pending");
-      showScreen("waiting");
-      bindAuthStream(result.challenge_id);
-    } catch (err) {
-      if (err.code === "wallet_local_unreachable" || err.code === "wallet_local_required") {
-        showError(elements.loginError, "이 PC에서 MiID Wallet 앱을 실행한 뒤 다시 시도해주세요.");
+        state.profile = result.profile;
+        bindSessionStream(serviceId);
       } else {
-        showError(elements.loginError, err.message);
+        state.challengeId = result.challenge_id;
+        state.expiresAt = result.expires_at;
+        bindAuthStream(serviceId, result.challenge_id);
       }
-    } finally {
-      setLoading(elements.btnLogin, false);
+      updateCardUI(serviceId);
+    } catch (err) {
+      state.error = (err.code === "wallet_local_unreachable")
+        ? "Wallet을 실행해주세요"
+        : err.message;
+      updateCardUI(serviceId);
     }
   }
 
-  function cancelLogin() {
-    if (authStream) {
-      authStream.close();
-      authStream = null;
-    }
-    currentChallengeId = null;
-    showScreen("login");
-  }
-
-  async function logout() {
+  async function registerService(serviceId) {
+    const state = servicesState.get(serviceId);
     try {
-      await apiCall("POST", "/logout", {});
-    } catch (_err) {
-      // ignore
+      await apiCall("POST", `/service/${encodeURIComponent(serviceId)}/register`, {});
+      state.config.registered = true;
+      updateCardUI(serviceId);
+    } catch (err) {
+      state.error = "Registration failed: " + err.message;
+      updateCardUI(serviceId);
     }
-    currentChallengeId = null;
-    if (authStream) {
-      authStream.close();
-      authStream = null;
-    }
-    if (sessionStream) {
-      sessionStream.close();
-      sessionStream = null;
-    }
-    showScreen("login");
   }
 
-  async function saveServiceConfig() {
-    hideError(elements.manageError);
-    setLoading(elements.btnSaveManage, true);
+  async function logout(serviceId) {
+    if (!serviceId) return;
+    try {
+      await apiCall("POST", "/logout", { service_id: serviceId });
+      const state = servicesState.get(serviceId);
+      if (state) {
+        state.profile = null;
+        if (state.sessionStream) state.sessionStream.close();
+        updateCardUI(serviceId);
+      }
+    } catch (err) {
+      console.error(`Logout failed for ${serviceId}`, err);
+    }
+  }
 
-    const config = {
+  function bindSessionStream(serviceId) {
+    const state = servicesState.get(serviceId);
+    if (!state) return;
+
+    if (state.sessionStream) state.sessionStream.close();
+    state.sessionStream = new EventSource(`${API_BASE}/session/stream?service_id=${encodeURIComponent(serviceId)}`);
+
+    state.sessionStream.addEventListener("force_logout", (event) => {
+      const data = JSON.parse(event.data);
+      const targetId = data.payload?.service_id || serviceId;
+      console.log(`[service-frontend] session revoked for service=${targetId}`);
+
+      const targetState = servicesState.get(targetId);
+      if (targetState && targetState.profile) {
+        targetState.profile = null;
+        if (targetState.sessionStream) targetState.sessionStream.close();
+        updateCardUI(targetId);
+      }
+    });
+
+    state.sessionStream.onerror = () => {
+      // Auto reconnecting but we can log
+    };
+  }
+
+  // --- Modal & UI Events ---
+
+  function openManageModal(serviceId = null) {
+    elements.manageError.classList.add("hidden");
+    if (serviceId) {
+      const config = servicesState.get(serviceId).config;
+      elements.inputOriginalId.value = serviceId;
+      elements.inputServiceId.value = config.service_id;
+      elements.inputServiceName.value = config.service_name;
+      elements.inputFields.value = (config.requested_claims || []).join(", ");
+    } else {
+      elements.inputOriginalId.value = "";
+      elements.inputServiceId.value = "";
+      elements.inputServiceName.value = "";
+      elements.inputFields.value = "name, email, nickname";
+    }
+    elements.modalManage.classList.add("active");
+  }
+
+  async function saveConfig() {
+    const originalId = elements.inputOriginalId.value;
+    const body = {
       service_id: elements.inputServiceId.value.trim(),
       service_name: elements.inputServiceName.value.trim(),
       requested_fields: elements.inputFields.value.trim()
     };
 
+    if (!body.service_id) return (elements.manageError.textContent = "Service ID required", elements.manageError.classList.remove("hidden"));
+
     try {
-      if (!config.service_id || !config.requested_fields) {
-        throw new Error("Service ID and Fields are required");
-      }
-      await apiCall("POST", "/service/manage", config);
-      alert("서비스 설정이 저장되었습니다. 이제 새로운 설정으로 로그인할 수 있습니다.");
-      showScreen("login");
+      await apiCall("POST", "/service/save", body);
+      elements.modalManage.classList.remove("active");
+      await loadServices();
     } catch (err) {
-      showError(elements.manageError, err.message);
-    } finally {
-      setLoading(elements.btnSaveManage, false);
+      elements.manageError.textContent = err.message;
+      elements.manageError.classList.remove("hidden");
     }
   }
 
-  function retry() {
-    currentChallengeId = null;
-    if (authStream) {
-      authStream.close();
-      authStream = null;
+  // --- Event Delegation ---
+
+  elements.servicesGrid.addEventListener("click", (e) => {
+    const card = e.target.closest(".service-card");
+    if (!card) return;
+    const serviceId = card.dataset.serviceId;
+
+    if (e.target.closest(".btn-login")) startLogin(serviceId);
+    if (e.target.closest(".btn-register")) registerService(serviceId);
+    if (e.target.closest(".btn-setup")) openManageModal(serviceId);
+    if (e.target.closest(".btn-logout")) logout(serviceId);
+    if (e.target.closest(".btn-cancel")) {
+      const state = servicesState.get(serviceId);
+      if (state.authStream) state.authStream.close();
+      state.challengeId = null;
+      updateCardUI(serviceId);
     }
-    if (sessionStream) {
-      sessionStream.close();
-      sessionStream = null;
+    if (e.target.closest(".btn-retry")) {
+      const state = servicesState.get(serviceId);
+      state.error = null;
+      updateCardUI(serviceId);
     }
-    showScreen("login");
+  });
+
+  elements.btnAddService.addEventListener("click", () => openManageModal());
+  elements.btnSaveManage.addEventListener("click", saveConfig);
+  elements.btnCloseManage.addEventListener("click", () => elements.modalManage.classList.remove("active"));
+
+  // --- Init ---
+
+  async function init() {
+    await loadServices();
+    // Check sessions for all loaded services
+    for (const serviceId of servicesState.keys()) {
+      try {
+        const profile = await apiCall("GET", `/profile?service_id=${encodeURIComponent(serviceId)}`);
+        if (profile && profile.service_id === serviceId) {
+          const state = servicesState.get(serviceId);
+          if (state) {
+            state.profile = profile;
+            updateCardUI(serviceId);
+            bindSessionStream(serviceId);
+          }
+        }
+      } catch (err) {
+        // No session for this service, ignore
+      }
+    }
   }
 
-  async function checkSession() {
-    try {
-      const profile = await apiCall("GET", "/profile");
-      renderProfile(profile);
-      showScreen("success");
-      bindSessionStream();
-    } catch (_err) {
-      showScreen("login");
-    }
-  }
+  init();
 
-  elements.btnLogin.addEventListener("click", startLogin);
-  elements.btnCancel.addEventListener("click", cancelLogin);
-  elements.btnLogout.addEventListener("click", logout);
-  elements.btnRetry.addEventListener("click", retry);
-  elements.btnManage.addEventListener("click", () => showScreen("manage"));
-  elements.btnSaveManage.addEventListener("click", saveServiceConfig);
-  elements.btnCloseManage.addEventListener("click", () => showScreen("login"));
-
-  checkSession();
 })();

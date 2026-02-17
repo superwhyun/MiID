@@ -1,5 +1,7 @@
 const express = require("express");
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 const { EventSource } = require("eventsource");
 
 const PORT = Number(process.env.PORT || 15000);
@@ -14,6 +16,9 @@ const REDIRECT_URI = process.env.REDIRECT_URI || process.env.SERVICE_REDIRECT_UR
 const SESSION_MAX_AGE_MS = Number(process.env.SESSION_MAX_AGE_MS || 3600000);
 const AUTO_FINALIZE = process.env.SERVICE_AUTO_FINALIZE !== "0";
 const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
+const DATA_DIR = path.join(__dirname, "..", "..", "data");
+const CONFIGS_FILE = path.join(DATA_DIR, "service-configs.json");
+
 let CURRENT_SERVICE_ID = process.env.SERVICE_ID || "service-test";
 let CURRENT_CLIENT_ID = process.env.CLIENT_ID || process.env.SERVICE_CLIENT_ID || "web-client";
 let DYNAMIC_REQUESTED_CLAIMS = (process.env.REQUESTED_CLAIMS || "name,email,nickname")
@@ -27,7 +32,62 @@ const challengeStates = new Map();
 const challengeClients = new Map();
 const gatewayStreams = new Map();
 const sessionClients = new Map();
-let gatewaySessionEventSource = null;
+const serviceConfigs = new Map();
+
+const defaultServiceId = SERVICE_ID;
+// Initialized via loadConfigs()
+
+const gatewaySessionEventSources = new Map(); // client_id -> EventSource
+
+// --- Storage ---
+
+function ensureStore() {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+}
+
+function loadConfigs() {
+  ensureStore();
+  let configs = [];
+  try {
+    if (fs.existsSync(CONFIGS_FILE)) {
+      configs = JSON.parse(fs.readFileSync(CONFIGS_FILE, "utf8"));
+    }
+  } catch (err) {
+    dlog(`Failed to read configs file: ${err.message}`);
+  }
+
+  // Restore Map
+  configs.forEach((c) => {
+    serviceConfigs.set(c.service_id, c);
+  });
+
+  // Ensure default service is there
+  if (!serviceConfigs.has(defaultServiceId)) {
+    const defaultCfg = {
+      service_id: defaultServiceId,
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+      redirect_uri: REDIRECT_URI,
+      requested_claims: DYNAMIC_REQUESTED_CLAIMS,
+      service_name: "Default Service",
+      registered: true
+    };
+    serviceConfigs.set(defaultServiceId, defaultCfg);
+    saveConfigs();
+  }
+}
+
+function saveConfigs() {
+  ensureStore();
+  const list = Array.from(serviceConfigs.values());
+  try {
+    fs.writeFileSync(CONFIGS_FILE, JSON.stringify(list, null, 2));
+  } catch (err) {
+    dlog(`Failed to save configs: ${err.message}`);
+  }
+}
 
 function dlog(message) {
   if (DEBUG_AUTH) {
@@ -43,10 +103,11 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function createSession(userData) {
+function createSession(serviceId, userData) {
   const sid = generateSessionId();
   const session = {
     sid,
+    service_id: serviceId,
     ...userData,
     createdAt: nowIso(),
     expiresAt: new Date(Date.now() + SESSION_MAX_AGE_MS).toISOString()
@@ -58,13 +119,19 @@ function createSession(userData) {
   return session;
 }
 
-function getSession(sid) {
+function getSession(req, serviceId) {
+  const cookies = parseCookies(req.headers.cookie);
+  const sid = cookies[`sid_${serviceId}`] || cookies.sid; // fallback to generic
+  if (!sid) return null;
+
   const session = sessions.get(sid);
   if (!session) return null;
   if (new Date(session.expiresAt) < new Date()) {
     sessions.delete(sid);
     return null;
   }
+  // Optional security check: if providing serviceId, ensure session matches
+  if (serviceId && session.service_id !== serviceId) return null;
   return session;
 }
 
@@ -74,6 +141,74 @@ function deleteSession(sid) {
     gatewaySessionToLocalSid.delete(current.gatewaySessionId);
   }
   sessions.delete(sid);
+}
+
+function startGatewaySessionEventStream(clientId) {
+  if (gatewaySessionEventSources.has(clientId)) {
+    return;
+  }
+
+  const config = Array.from(serviceConfigs.values()).find(s => s.client_id === clientId);
+  if (!config || !config.registered) return;
+
+  const es = new EventSource(`${GATEWAY_URL}/v1/service/session-events`, {
+    fetch: (input, init) =>
+      fetch(input, {
+        ...init,
+        headers: {
+          ...(init?.headers || {}),
+          "X-Client-Id": config.client_id,
+          "X-Client-Secret": config.client_secret
+        }
+      })
+  });
+  gatewaySessionEventSources.set(clientId, es);
+  dlog(`gateway session stream open for client=${clientId}`);
+
+  const handleRevoke = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      dlog(`handleRevoke event received: ${event.type} payload=${JSON.stringify(data.payload || data)}`);
+      const gatewaySessionId = data.payload?.session_id || data.session_id;
+      if (!gatewaySessionId) return;
+
+      const sid = gatewaySessionToLocalSid.get(gatewaySessionId);
+      if (!sid) {
+        dlog(`handleRevoke: no local sid found for gatewaySessionId=${gatewaySessionId}`);
+        return;
+      }
+
+      const session = sessions.get(sid);
+      if (!session) {
+        dlog(`handleRevoke: session record missing for sid=${sid}`);
+        return;
+      }
+      const serviceId = session.service_id;
+
+      deleteSession(sid);
+      emitSessionEvent(sid, "force_logout", {
+        reason: "revoked",
+        service_id: serviceId,
+        event: event.type,
+        session_id: gatewaySessionId
+      });
+      dlog(`force logout SUCCESS sid=${sid} service=${serviceId} gateway_session=${gatewaySessionId} event=${event.type}`);
+    } catch (err) {
+      dlog(`session stream parse error: ${err.message}`);
+    }
+  };
+
+  es.addEventListener("session_revoked", handleRevoke);
+  es.addEventListener("session_terminated", handleRevoke);
+  es.addEventListener("session_deleted", handleRevoke);
+
+  es.onopen = () => {
+    dlog(`gateway session stream connected client=${clientId}`);
+  };
+
+  es.onerror = (err) => {
+    dlog(`gateway session stream error client=${clientId}: ${err.message || "unknown"}`);
+  };
 }
 
 function parseCookies(cookieHeader) {
@@ -121,13 +256,13 @@ function setChallengeState(challengeId, patch) {
   return next;
 }
 
-async function postJson(url, body, extraHeaders = {}) {
+async function postJson(url, body, serviceConfig, extraHeaders = {}) {
   const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Client-Id": CURRENT_CLIENT_ID,
-      "X-Client-Secret": CLIENT_SECRET,
+      "X-Client-Id": serviceConfig.client_id,
+      "X-Client-Secret": serviceConfig.client_secret,
       ...extraHeaders
     },
     body: JSON.stringify(body)
@@ -181,25 +316,36 @@ async function finalizeChallenge(challengeId, authorizationCode) {
       throw new Error("authorization_code_mismatch");
     }
 
+    const challengeState = challengeStates.get(challengeId);
+    const serviceId = challengeState?.service_id || defaultServiceId;
+    const config = serviceConfigs.get(serviceId) || Array.from(serviceConfigs.values())[0];
+
+    console.log(`[service-backend] token exchange info: service=${serviceId} client=${config.client_id} redirect=${config.redirect_uri}`);
+
     const tokenData = await postJson(`${GATEWAY_URL}/v1/token/exchange`, {
       grant_type: "authorization_code",
       code: authorizationCode,
-      client_id: CURRENT_CLIENT_ID,
-      redirect_uri: REDIRECT_URI
-    });
+      client_id: config.client_id,
+      redirect_uri: config.redirect_uri
+    }, config);
 
     const profile = await getJson(
-      `${GATEWAY_URL}/v1/services/${encodeURIComponent(CURRENT_SERVICE_ID)}/profile`,
+      `${GATEWAY_URL}/v1/services/${encodeURIComponent(serviceId)}/profile`,
       { Authorization: `Bearer ${tokenData.access_token}` }
     );
 
-    const session = createSession({
+    const session = createSession(serviceId, {
       gatewaySessionId: tokenData.session_id || null,
       accessToken: tokenData.access_token,
       refreshToken: tokenData.refresh_token,
       scope: tokenData.scope,
       profile
     });
+
+    // Ensure session event stream is open for this client
+    if (config.client_id) {
+      startGatewaySessionEventStream(config.client_id);
+    }
 
     const state = setChallengeState(challengeId, {
       status: "active",
@@ -224,65 +370,20 @@ async function finalizeChallenge(challengeId, authorizationCode) {
   }
 }
 
-function startGatewaySessionEventStream() {
-  if (gatewaySessionEventSource) {
-    return;
-  }
-  const es = new EventSource(`${GATEWAY_URL}/v1/service/session-events`, {
-    fetch: (input, init) =>
-      fetch(input, {
-        ...init,
-        headers: {
-          ...(init?.headers || {}),
-          "X-Client-Id": CURRENT_CLIENT_ID,
-          "X-Client-Secret": CLIENT_SECRET
-        }
-      })
-  });
-  gatewaySessionEventSource = es;
-  dlog("gateway session stream open");
-
-  es.addEventListener("session_revoked", (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      const gatewaySessionId = data.payload?.session_id;
-      if (!gatewaySessionId) {
-        return;
-      }
-      const sid = gatewaySessionToLocalSid.get(gatewaySessionId);
-      if (!sid) {
-        return;
-      }
-      deleteSession(sid);
-      emitSessionEvent(sid, "force_logout", {
-        reason: "revoked",
-        session_id: gatewaySessionId
-      });
-      dlog(`force logout sid=${sid} gateway_session=${gatewaySessionId}`);
-    } catch (err) {
-      dlog(`session stream parse error: ${err.message}`);
-    }
-  });
-
-  es.onopen = () => {
-    dlog("gateway session stream connected");
-  };
-
-  es.onerror = (err) => {
-    dlog(`gateway session stream error: ${err.message || "unknown"}`);
-  };
-}
+// Obsolete startGatewaySessionEventStream removed from end, now called per client
 
 function startGatewayChallengeStream(challengeId) {
   if (gatewayStreams.has(challengeId)) {
     return;
   }
+  const serviceConfig = serviceConfigs.get(challengeStates.get(challengeId)?.service_id) || Array.from(serviceConfigs.values())[0];
+
   const es = new EventSource(`${GATEWAY_URL}/v1/service/events?challenge_id=${encodeURIComponent(challengeId)}`, {
     fetch: (input, init) => {
       const headers = {
         ...(init?.headers || {}),
-        "X-Client-Id": CURRENT_CLIENT_ID,
-        "X-Client-Secret": CLIENT_SECRET
+        "X-Client-Id": serviceConfig.client_id,
+        "X-Client-Secret": serviceConfig.client_secret
       };
       return fetch(input, {
         ...init,
@@ -357,21 +458,88 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use((req, _res, next) => {
-  const cookies = parseCookies(req.headers.cookie);
-  if (cookies.sid) {
-    req.session = getSession(cookies.sid);
-  }
-  next();
-});
-
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "service-backend", now: nowIso() });
 });
 
+app.get("/services", (req, res) => {
+  res.json(Array.from(serviceConfigs.values()));
+});
+
+app.post("/service/save", (req, res) => {
+  const { service_id, service_name, requested_fields } = req.body || {};
+  if (!service_id || !requested_fields) {
+    return res.status(400).json({ error: "invalid_request", message: "service_id and requested_fields are required" });
+  }
+
+  const claims = requested_fields.split(",").map(s => s.trim()).filter(Boolean);
+  const redirectHost = process.env.REDIRECT_HOST || "service-test.local";
+  const config = {
+    service_id,
+    client_id: service_id, // simple 1:1 for now
+    client_secret: process.env.CLIENT_SECRET || "dev-service-secret",
+    redirect_uri: `https://${service_id}.${redirectHost.split('.').slice(1).join('.')}/callback`,
+    requested_claims: claims,
+    service_name: service_name || service_id,
+    registered: false
+  };
+
+  // Special case for default-like behavior
+  if (service_id === "service-test") {
+    config.redirect_uri = REDIRECT_URI;
+  }
+
+  serviceConfigs.set(service_id, config);
+  saveConfigs();
+  res.json({ success: true, service: config });
+});
+
+app.post("/service/:id/register", async (req, res) => {
+  const serviceId = req.params.id;
+  const config = serviceConfigs.get(serviceId);
+  if (!config) {
+    return res.status(404).json({ error: "service_not_found" });
+  }
+
+  try {
+    // Register to gateway
+    // We use any already registered service to authorize this registration call, 
+    // or use the config itself if it's the first one.
+    const authConfig = Array.from(serviceConfigs.values()).find(s => s.registered) || config;
+
+    await postJson(`${GATEWAY_URL}/v1/services`, {
+      client_id: config.client_id,
+      service_id: config.service_id,
+      client_secret: config.client_secret,
+      redirect_uris: [config.redirect_uri]
+    }, authConfig);
+
+    config.registered = true;
+    serviceConfigs.set(serviceId, config);
+    saveConfigs();
+
+    // Start session stream immediately for this new client
+    startGatewaySessionEventStream(config.client_id);
+
+    res.json({ success: true, service: config });
+  } catch (err) {
+    res.status(500).json({ error: "registration_failed", message: err.message });
+  }
+});
+
 app.post("/auth/start", async (req, res) => {
   try {
-    const { did } = req.body || {};
+    const { did, service_id } = req.body || {};
+    const targetServiceId = service_id || defaultServiceId;
+    const config = serviceConfigs.get(targetServiceId);
+
+    if (!config) {
+      return res.status(404).json({ error: "service_not_found" });
+    }
+    if (!config.registered) {
+      return res.status(403).json({ error: "service_not_registered", message: "Register service with gateway first" });
+    }
+
     const didHint = did || null;
     const requestedScopes = ["profile", "email"];
     if (LOCAL_WALLET_REQUIRED) {
@@ -387,14 +555,14 @@ app.post("/auth/start", async (req, res) => {
     }
 
     const challenge = await postJson(`${GATEWAY_URL}/v1/auth/challenge`, {
-      service_id: CURRENT_SERVICE_ID,
-      client_id: CURRENT_CLIENT_ID,
-      redirect_uri: REDIRECT_URI,
+      service_id: config.service_id,
+      client_id: config.client_id,
+      redirect_uri: config.redirect_uri,
       scopes: requestedScopes,
-      requested_claims: DYNAMIC_REQUESTED_CLAIMS,
+      requested_claims: config.requested_claims,
       did_hint: didHint,
       require_user_approval: true
-    }, {
+    }, config, {
       "X-Local-Wallet-Ready": LOCAL_WALLET_REQUIRED ? "1" : "0"
     });
 
@@ -404,6 +572,7 @@ app.post("/auth/start", async (req, res) => {
       challenge_id: challenge.challenge_id,
       nonce: challenge.nonce,
       expires_at: challenge.expires_at,
+      service_id: config.service_id,
       authorization_code: challenge.authorization_code || null
     });
 
@@ -412,7 +581,7 @@ app.post("/auth/start", async (req, res) => {
     } else if (state.status === "approved" && state.authorization_code && AUTO_FINALIZE) {
       await finalizeChallenge(challenge.challenge_id, state.authorization_code);
     }
-    console.log(`[service-backend] auth start challenge=${challenge.challenge_id}`);
+    console.log(`[service-backend] auth start challenge=${challenge.challenge_id} service=${config.service_id}`);
 
     return res.status(201).json({
       challenge_id: challenge.challenge_id,
@@ -466,17 +635,21 @@ app.get("/auth/stream/:challengeId", (req, res) => {
 });
 
 app.get("/session/stream", (req, res) => {
-  if (!req.session) {
+  const serviceId = req.query.service_id;
+  const session = getSession(req, serviceId);
+  if (!session) {
     return res.status(401).json({ error: "not_authenticated" });
   }
-  const sid = req.session.sid;
+
+  const sid = session.sid;
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders?.();
-  dlog(`frontend session stream connected sid=${sid}`);
+
+  dlog(`frontend session stream connected sid=${sid} service=${serviceId}`);
   res.write(`event: connected\n`);
-  res.write(`data: ${JSON.stringify({ sid, at: nowIso() })}\n\n`);
+  res.write(`data: ${JSON.stringify({ sid, service_id: serviceId, at: nowIso() })}\n\n`);
 
   const subs = sessionClients.get(sid) || new Set();
   subs.add(res);
@@ -523,7 +696,7 @@ app.post("/auth/complete/:challengeId", (req, res) => {
 
   res.setHeader(
     "Set-Cookie",
-    `sid=${session.sid}; HttpOnly; SameSite=Lax; Max-Age=${SESSION_MAX_AGE_MS / 1000}; Path=/`
+    `sid_${session.service_id}=${session.sid}; HttpOnly; SameSite=Lax; Max-Age=${SESSION_MAX_AGE_MS / 1000}; Path=/`
   );
 
   return res.json({
@@ -548,20 +721,24 @@ app.post("/auth/finalize/:challengeId", async (req, res) => {
 });
 
 app.get("/profile", (req, res) => {
-  if (!req.session) {
-    return res.status(401).json({ error: "not_authenticated", message: "No valid session" });
+  const serviceId = req.query.service_id || defaultServiceId;
+  const session = getSession(req, serviceId);
+  if (!session) {
+    return res.status(401).json({ error: "not_authenticated", message: "No valid session", service_id: serviceId });
   }
 
-  const { profile, scope, expiresAt } = req.session;
+  const { profile, scope, expiresAt } = session;
+  const config = serviceConfigs.get(serviceId) || {};
+
   const scopeText = scope || profile?.scope || "";
   const approvedClaims = Array.isArray(profile?.approved_claims) ? profile.approved_claims : [];
   const approvedSet = new Set(approvedClaims);
   const profileResponse = {
     subject_id: profile?.subject_id || null,
     did: profile?.did || null,
-    service_id: profile?.service_id || CURRENT_SERVICE_ID,
+    service_id: serviceId,
     scope: scopeText || null,
-    requested_claims: Array.isArray(profile?.requested_claims) ? profile.requested_claims : DYNAMIC_REQUESTED_CLAIMS,
+    requested_claims: Array.isArray(profile?.requested_claims) ? profile.requested_claims : (config.requested_claims || []),
     approved_claims: approvedClaims,
     risk_level: profile?.risk_level || "normal",
     session_expires_at: expiresAt
@@ -580,51 +757,35 @@ app.get("/profile", (req, res) => {
   return res.json(profileResponse);
 });
 
-app.post("/service/manage", async (req, res) => {
-  try {
-    const { service_id, service_name, requested_fields } = req.body || {};
-    if (!service_id || !requested_fields) {
-      return res.status(400).json({ error: "invalid_request", message: "service_id and requested_fields are required" });
-    }
-
-    const claims = requested_fields.split(",").map(s => s.trim()).filter(Boolean);
-
-    // 1. Update gateway registration
-    // We use CURRENT_CLIENT_ID to authenticate as the current service to the gateway
-    // But we register the NEW service configuration
-    await postJson(`${GATEWAY_URL}/v1/services`, {
-      client_id: service_id, // For simplify, client_id = service_id
-      service_id: service_id,
-      client_secret: CLIENT_SECRET, // Keep same secret for simplicity in this dev environment
-      redirect_uris: [REDIRECT_URI]
-    });
-
-    // 2. Update local state
-    CURRENT_SERVICE_ID = service_id;
-    CURRENT_CLIENT_ID = service_id;
-    DYNAMIC_REQUESTED_CLAIMS = claims;
-
-    console.log(`[service-backend] service managed: ${service_id}, fields: ${claims.join(",")}`);
-
-    return res.json({
-      success: true,
-      service_id: CURRENT_SERVICE_ID,
-      service_name,
-      requested_claims: DYNAMIC_REQUESTED_CLAIMS
-    });
-  } catch (err) {
-    console.error(`[service-backend] service management failed: ${err.message}`);
-    return res.status(500).json({ error: "management_failed", message: err.message });
-  }
-});
+// Obsolete service manage endpoint removed in favor of /service/save and /service/register
 
 app.post("/logout", (req, res) => {
-  const cookies = parseCookies(req.headers.cookie);
-  if (cookies.sid) {
-    deleteSession(cookies.sid);
+  const { service_id } = req.body || {};
+  if (service_id) {
+    const session = getSession(req, service_id);
+    if (session) {
+      deleteSession(session.sid);
+    }
+    res.setHeader("Set-Cookie", `sid_${service_id}=; HttpOnly; SameSite=Lax; Max-Age=0; Path=/`);
+    return res.json({ success: true, message: `Logged out from ${service_id}` });
   }
-  res.setHeader("Set-Cookie", "sid=; HttpOnly; SameSite=Lax; Max-Age=0; Path=/");
-  return res.json({ success: true, message: "Logged out successfully" });
+
+  // Fallback: logout all MiID sessions
+  const cookies = parseCookies(req.headers.cookie);
+  const clearedPaths = [];
+  Object.keys(cookies).forEach(name => {
+    if (name.startsWith("sid")) {
+      deleteSession(cookies[name]);
+      clearedPaths.push(`${name}=; HttpOnly; SameSite=Lax; Max-Age=0; Path=/`);
+    }
+  });
+
+  if (clearedPaths.length > 0) {
+    res.setHeader("Set-Cookie", clearedPaths);
+  } else {
+    res.setHeader("Set-Cookie", "sid=; HttpOnly; SameSite=Lax; Max-Age=0; Path=/");
+  }
+  return res.json({ success: true, message: "Logged out all sessions" });
 });
 
 app.listen(PORT, () => {
@@ -635,6 +796,15 @@ app.listen(PORT, () => {
   console.log(`Debug auth: ${DEBUG_AUTH ? "on" : "off"}`);
 });
 
-startGatewaySessionEventStream();
+// Initialize
+loadConfigs();
+startGatewaySessionEventStream(CLIENT_ID);
+
+// Start background connection for any other pre-registered clients
+for (const config of serviceConfigs.values()) {
+  if (config.registered && config.service_id !== defaultServiceId) {
+    startGatewaySessionEventStream(config.client_id);
+  }
+}
 
 module.exports = { app };

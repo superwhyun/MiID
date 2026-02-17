@@ -5,6 +5,7 @@
   "type": "commonjs",
   "main": "apps/wallet/main.js",
   "scripts": {
+    "dev": "concurrently -n wallet,gateway,service -c blue,green,yellow \"npm run dev:wallet\" \"npm run dev:gateway\" \"npm run dev:service\"",
     "dev:wallet": "DEBUG_AUTH=1 electron apps/wallet/main.js",
     "dev:gateway": "DEBUG_AUTH=1 node apps/gateway/server.js",
     "dev:service": "DEBUG_AUTH=1 node scripts/dev-service.js",
@@ -24,6 +25,7 @@
   },
   "devDependencies": {
     "@electron/packager": "^19.0.5",
+    "concurrently": "^9.1.2",
     "electron": "^40.4.1"
   }
 }
