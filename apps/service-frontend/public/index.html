@@ -28,7 +28,46 @@
           </span>
         </button>
 
+        <button id="btn-manage" class="btn btn-secondary" style="margin-top: 12px;">
+          Service Management
+        </button>
+
         <div id="login-error" class="error-message hidden"></div>
+      </div>
+    </div>
+
+    <!-- Management Modal/Screen -->
+    <div id="screen-manage" class="screen">
+      <div class="card">
+        <div class="logo">
+          <div class="logo-icon">S</div>
+          <h2>Service Config</h2>
+        </div>
+        <p class="subtitle">Gateway Dynamic Registration</p>
+
+        <div class="form-group">
+          <label for="input-service-id">Service ID</label>
+          <input type="text" id="input-service-id" placeholder="e.g. my-service" value="service-test">
+        </div>
+        <div class="form-group">
+          <label for="input-service-name">Service Name</label>
+          <input type="text" id="input-service-name" placeholder="e.g. My Awesome Service" value="MiID Service">
+        </div>
+        <div class="form-group">
+          <label for="input-fields">Requested Fields (comma separated)</label>
+          <input type="text" id="input-fields" placeholder="e.g. name, email, nickname" value="name, email, nickname">
+        </div>
+
+        <button id="btn-save-manage" class="btn btn-primary">
+          <span class="btn-text">Save Configuration</span>
+          <span class="btn-loading hidden">
+            <span class="spinner"></span>
+            Saving...
+          </span>
+        </button>
+        <button id="btn-close-manage" class="btn btn-secondary" style="margin-top: 12px;">Close</button>
+
+        <div id="manage-error" class="error-message hidden"></div>
       </div>
     </div>
 
@@ -101,17 +140,8 @@
           </div>
 
           <div class="profile-details">
-            <div class="detail-row">
-              <span class="label">Name:</span>
-              <span id="profile-name" class="value">-</span>
-            </div>
-            <div class="detail-row">
-              <span class="label">Email:</span>
-              <span id="profile-email" class="value">-</span>
-            </div>
-            <div class="detail-row">
-              <span class="label">Nickname:</span>
-              <span id="profile-nickname" class="value">-</span>
+            <div id="profile-dynamic-claims">
+              <!-- 동적 클레임이 여기에 렌더링됨 -->
             </div>
             <div class="detail-row">
               <span class="label">Service ID:</span>

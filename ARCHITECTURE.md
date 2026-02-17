@@ -389,9 +389,80 @@ flowchart LR
 - `GATEWAY_URL`: Gateway URL
 - `LOCAL_WALLET_URL`: 로컬 월렛 URL
 - `LOCAL_WALLET_REQUIRED`: 로컬 월렛 필수 여부
-- `CLIENT_ID`, `CLIENT_SECRET`: Gateway 인증 정보
+- `CLIENT_ID`, `CLIENT_SECRET`: Gateway 인증 정보 (초기값)
+- `SERVICE_ID`: 서비스 식별자 (초기값)
 - `SERVICE_AUTO_FINALIZE`: 자동 finalize 여부
-- `REQUESTED_CLAIMS`: 요청할 claims (쉼표 구분)
+- `REQUESTED_CLAIMS`: 요청할 claims (쉼표 구분, 초기값)
+
+**동적 설정 변수** (런타임에 `/service/manage` API로 변경 가능):
+- `CURRENT_SERVICE_ID`: 현재 사용 중인 서비스 ID
+- `CURRENT_CLIENT_ID`: 현재 사용 중인 클라이언트 ID
+- `DYNAMIC_REQUESTED_CLAIMS`: 현재 요청할 claims 목록
+
+## 13) Frontend Profile Rendering
+
+프론트엔드는 프로필 정보를 동적으로 렌더링합니다.
+
+```mermaid
+flowchart TD
+    PR["renderProfile(profile)"] --> RC["requested_claims 순회"]
+    RC --> CHK{"profile[claim] 존재?"}
+    CHK -->|Yes| SHOW["값 표시"]
+    CHK -->|No| DASH["'-' 표시 (회색)"]
+    SHOW --> NEXT["다음 claim"]
+    DASH --> NEXT
+    NEXT --> RC
+```
+
+**렌더링 규칙:**
+1. `requested_claims` 배열의 모든 항목을 표시
+2. `approved_claims`에 포함되고 값이 있으면 정상 표시
+3. 승인되지 않았거나 값이 없으면 `-`로 표시 (회색)
+4. 고정 필드: Service ID, Risk Level은 항상 표시
+
+**예시 응답:**
+```json
+{
+  "requested_claims": ["name", "email", "phone"],
+  "approved_claims": ["name", "email"],
+  "name": "홍길동",
+  "email": "user@example.com"
+}
+```
+
+**렌더링 결과:**
+| Field | Value | Style |
+|-------|-------|-------|
+| name | 홍길동 | 정상 |
+| email | user@example.com | 정상 |
+| phone | - | 회색 |
+
+## 14) Dynamic Service Configuration
+
+서비스 백엔드는 런타임에 서비스 설정을 변경할 수 있습니다.
+
+```mermaid
+sequenceDiagram
+    participant UI as Service Frontend
+    participant BE as Service Backend
+    participant GW as Gateway
+
+    UI->>BE: POST /service/manage<br/>{service_id, requested_fields}
+    BE->>GW: POST /v1/services<br/>(새 서비스 등록)
+    GW-->>BE: 등록 완료
+    BE->>BE: CURRENT_SERVICE_ID 업데이트
+    BE->>BE: CURRENT_CLIENT_ID 업데이트
+    BE->>BE: DYNAMIC_REQUESTED_CLAIMS 업데이트
+    BE-->>UI: {success: true}
+
+    Note over UI,GW: 이후 로그인은 새 설정으로 수행
+    UI->>BE: POST /auth/start
+    BE->>GW: POST /v1/auth/challenge<br/>(새 service_id, client_id, claims)
+```
+
+**주의사항:**
+- EventSource 연결 시에도 `CURRENT_CLIENT_ID`를 사용하여 인증
+- 서비스 설정 변경 후 기존 EventSource 연결은 유지됨 (재연결 시 새 설정 적용)
 
 ## TODO
 

@@ -1,4 +1,4 @@
-(function() {
+(function () {
   "use strict";
 
   const API_BASE = "/api";
@@ -10,7 +10,8 @@
     login: document.getElementById("screen-login"),
     waiting: document.getElementById("screen-waiting"),
     success: document.getElementById("screen-success"),
-    error: document.getElementById("screen-error")
+    error: document.getElementById("screen-error"),
+    manage: document.getElementById("screen-manage")
   };
 
   const elements = {
@@ -26,11 +27,15 @@
     errorMessage: document.getElementById("error-message"),
     profileSubject: document.getElementById("profile-subject"),
     profileDid: document.getElementById("profile-did"),
-    profileName: document.getElementById("profile-name"),
-    profileEmail: document.getElementById("profile-email"),
-    profileNickname: document.getElementById("profile-nickname"),
     profileService: document.getElementById("profile-service"),
-    profileRisk: document.getElementById("profile-risk")
+    profileRisk: document.getElementById("profile-risk"),
+    btnManage: document.getElementById("btn-manage"),
+    btnSaveManage: document.getElementById("btn-save-manage"),
+    btnCloseManage: document.getElementById("btn-close-manage"),
+    inputServiceId: document.getElementById("input-service-id"),
+    inputServiceName: document.getElementById("input-service-name"),
+    inputFields: document.getElementById("input-fields"),
+    manageError: document.getElementById("manage-error")
   };
 
   function showScreen(screenName) {
@@ -73,11 +78,29 @@
   function renderProfile(profile) {
     elements.profileSubject.textContent = truncateId(profile.subject_id);
     elements.profileDid.textContent = profile.did;
-    elements.profileName.textContent = profile.name || "-";
-    elements.profileEmail.textContent = profile.email || "-";
-    elements.profileNickname.textContent = profile.nickname || "-";
     elements.profileService.textContent = profile.service_id;
     elements.profileRisk.textContent = profile.risk_level || "normal";
+
+    // 동적 클레임 렌더링 - 요청한 목록 기준으로 표시
+    const dynamicContainer = document.getElementById("profile-dynamic-claims");
+    if (dynamicContainer) {
+      dynamicContainer.innerHTML = "";
+      const requestedClaims = profile.requested_claims || [];
+      const approvedSet = new Set(profile.approved_claims || []);
+      requestedClaims.forEach((claim) => {
+        const value = profile[claim];
+        const isApproved = approvedSet.has(claim);
+        const displayValue = (value !== undefined && value !== null) ? value : "-";
+        const row = document.createElement("div");
+        row.className = "detail-row";
+        const statusClass = isApproved ? "" : ' style="color:#999;"';
+        row.innerHTML = `<span class="label">${claim}:</span><span class="value"${statusClass}>${displayValue}</span>`;
+        dynamicContainer.appendChild(row);
+      });
+      if (requestedClaims.length === 0) {
+        dynamicContainer.innerHTML = '<div class="detail-row"><span class="value" style="color:#888;">요청된 클레임 없음</span></div>';
+      }
+    }
   }
 
   async function apiCall(method, path, body = null) {
@@ -234,6 +257,30 @@
     showScreen("login");
   }
 
+  async function saveServiceConfig() {
+    hideError(elements.manageError);
+    setLoading(elements.btnSaveManage, true);
+
+    const config = {
+      service_id: elements.inputServiceId.value.trim(),
+      service_name: elements.inputServiceName.value.trim(),
+      requested_fields: elements.inputFields.value.trim()
+    };
+
+    try {
+      if (!config.service_id || !config.requested_fields) {
+        throw new Error("Service ID and Fields are required");
+      }
+      await apiCall("POST", "/service/manage", config);
+      alert("서비스 설정이 저장되었습니다. 이제 새로운 설정으로 로그인할 수 있습니다.");
+      showScreen("login");
+    } catch (err) {
+      showError(elements.manageError, err.message);
+    } finally {
+      setLoading(elements.btnSaveManage, false);
+    }
+  }
+
   function retry() {
     currentChallengeId = null;
     if (authStream) {
@@ -262,6 +309,9 @@
   elements.btnCancel.addEventListener("click", cancelLogin);
   elements.btnLogout.addEventListener("click", logout);
   elements.btnRetry.addEventListener("click", retry);
+  elements.btnManage.addEventListener("click", () => showScreen("manage"));
+  elements.btnSaveManage.addEventListener("click", saveServiceConfig);
+  elements.btnCloseManage.addEventListener("click", () => showScreen("login"));
 
   checkSession();
 })();

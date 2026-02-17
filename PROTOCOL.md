@@ -273,10 +273,21 @@ Cookie: sid=sid_xxx
   "risk_level": "normal",
   "name": "홍길동",
   "email": "user@example.com",
-  "nickname": null,
   "session_expires_at": "2024-01-01T13:00:00.000Z"
 }
 ```
+
+**응답 필드 설명:**
+
+| Field | 설명 |
+|-------|------|
+| `requested_claims` | 서비스가 요청한 클레임 목록 (동적으로 설정 가능) |
+| `approved_claims` | 사용자가 승인한 클레임 목록 |
+| `{claim_name}` | 승인된 각 클레임의 실제 값 (approved_claims에 포함된 항목만) |
+
+**프론트엔드 렌더링:**
+- `requested_claims`의 모든 항목을 UI에 표시
+- 승인된 클레임은 값 표시, 미승인 클레임은 `-` 표시
 
 **Error Responses**
 
@@ -286,7 +297,47 @@ Cookie: sid=sid_xxx
 
 ---
 
-### 2.6 POST /logout
+### 2.6 POST /service/manage
+
+서비스 설정을 동적으로 변경합니다. (개발/테스트용)
+
+**Request**
+```http
+POST /api/service/manage HTTP/1.1
+Content-Type: application/json
+
+{
+  "service_id": "my-service",
+  "service_name": "My Service",
+  "requested_fields": "name,email,phone,address"
+}
+```
+
+**Response (200 OK)**
+```json
+{
+  "success": true,
+  "service_id": "my-service",
+  "service_name": "My Service",
+  "requested_claims": ["name", "email", "phone", "address"]
+}
+```
+
+**동작 방식**:
+1. Gateway에 새 서비스 등록 (`/v1/services`)
+2. 로컬 상태 업데이트 (`CURRENT_SERVICE_ID`, `CURRENT_CLIENT_ID`, `DYNAMIC_REQUESTED_CLAIMS`)
+3. 이후 로그인 요청은 새 설정으로 수행
+
+**Error Responses**
+
+| Status | Error Code | 설명 |
+|--------|------------|------|
+| 400 | `invalid_request` | 필수 파라미터 누락 |
+| 500 | `management_failed` | 서비스 등록 실패 |
+
+---
+
+### 2.8 POST /logout
 
 세션을 종료합니다.
 
@@ -308,7 +359,7 @@ Set-Cookie: sid=; HttpOnly; SameSite=Lax; Max-Age=0; Path=/
 
 ---
 
-### 2.7 GET /session/stream (SSE)
+### 2.9 GET /session/stream (SSE)
 
 세션 상태 변화를 실시간으로 수신합니다. (Wallet에서 revoke 감지)
 
@@ -347,7 +398,55 @@ Wallet에서 세션 revoke
 
 ## 3. Service Backend ↔ Gateway
 
-### 3.1 POST /v1/auth/challenge
+### 3.1 POST /v1/services
+
+서비스를 동적으로 등록하거나 업데이트합니다.
+
+**Request**
+```http
+POST /v1/services HTTP/1.1
+Content-Type: application/json
+X-Client-Id: web-client
+X-Client-Secret: dev-service-secret
+
+{
+  "client_id": "my-service",
+  "service_id": "my-service",
+  "client_secret": "my-secret",
+  "redirect_uris": ["https://my-service.local/callback"]
+}
+```
+
+**Response (200 OK)**
+```json
+{
+  "success": true,
+  "service": {
+    "client_id": "my-service",
+    "service_id": "my-service",
+    "client_secret": "my-secret",
+    "redirect_uris": ["https://my-service.local/callback"],
+    "updated_at": "2024-01-01T12:00:00.000Z"
+  }
+}
+```
+
+**동작 방식:**
+- 동일한 `client_id`가 존재하면 업데이트
+- 존재하지 않으면 새로 등록
+- 등록 후 서비스 레지스트리 즉시 리로드
+
+**Error Responses**
+
+| Status | Error Code | 설명 |
+|--------|------------|------|
+| 400 | `invalid_request` | 필수 파라미터 누락 |
+| 401 | `service_client_auth_required` | 인증 헤더 누락 |
+| 401 | `invalid_service_client_credentials` | 잘못된 인증 정보 |
+
+---
+
+### 3.2 POST /v1/auth/challenge
 
 새로운 인증 Challenge를 생성합니다.
 
@@ -398,7 +497,7 @@ X-Local-Wallet-Ready: 1
 
 ---
 
-### 3.2 GET /v1/service/events (SSE)
+### 3.3 GET /v1/service/events (SSE)
 
 Challenge 관련 이벤트를 수신합니다.
 
@@ -462,7 +561,7 @@ Wallet 승인 및 서명 검증 완료
 
 ---
 
-### 3.3 GET /v1/service/session-events (SSE)
+### 3.4 GET /v1/service/session-events (SSE)
 
 서비스의 전체 세션 이벤트를 수신합니다.
 
@@ -508,7 +607,7 @@ Accept: text/event-stream
 
 ---
 
-### 3.4 GET /v1/auth/challenges/:challengeId/status
+### 3.5 GET /v1/auth/challenges/:challengeId/status
 
 Challenge 상태를 조회합니다.
 
@@ -526,7 +625,7 @@ Challenge 상태를 조회합니다.
 
 ---
 
-### 3.5 POST /v1/token/exchange
+### 3.6 POST /v1/token/exchange
 
 Authorization Code를 Access Token으로 교환합니다.
 
@@ -571,7 +670,7 @@ X-Client-Secret: dev-service-secret
 
 ---
 
-### 3.6 GET /v1/services/:serviceId/profile
+### 3.7 GET /v1/services/:serviceId/profile
 
 Access Token으로 사용자 프로필을 조회합니다.
 
@@ -607,7 +706,7 @@ Authorization: Bearer at_xxx
 
 ---
 
-### 3.7 POST /v1/auth/reuse-session
+### 3.8 POST /v1/auth/reuse-session
 
 기존 세션 재사용을 시도합니다.
 
@@ -645,7 +744,7 @@ X-Client-Secret: dev-service-secret
 
 ---
 
-### 3.8 POST /v1/wallet/notify-reuse
+### 3.9 POST /v1/wallet/notify-reuse
 
 세션 재사용을 Wallet에 알립니다.
 

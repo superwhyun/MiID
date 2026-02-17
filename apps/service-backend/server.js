@@ -14,7 +14,9 @@ const REDIRECT_URI = process.env.REDIRECT_URI || process.env.SERVICE_REDIRECT_UR
 const SESSION_MAX_AGE_MS = Number(process.env.SESSION_MAX_AGE_MS || 3600000);
 const AUTO_FINALIZE = process.env.SERVICE_AUTO_FINALIZE !== "0";
 const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
-const REQUESTED_CLAIMS = (process.env.REQUESTED_CLAIMS || "name,email,nickname")
+let CURRENT_SERVICE_ID = process.env.SERVICE_ID || "service-test";
+let CURRENT_CLIENT_ID = process.env.CLIENT_ID || process.env.SERVICE_CLIENT_ID || "web-client";
+let DYNAMIC_REQUESTED_CLAIMS = (process.env.REQUESTED_CLAIMS || "name,email,nickname")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
@@ -124,7 +126,7 @@ async function postJson(url, body, extraHeaders = {}) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Client-Id": CLIENT_ID,
+      "X-Client-Id": CURRENT_CLIENT_ID,
       "X-Client-Secret": CLIENT_SECRET,
       ...extraHeaders
     },
@@ -182,12 +184,12 @@ async function finalizeChallenge(challengeId, authorizationCode) {
     const tokenData = await postJson(`${GATEWAY_URL}/v1/token/exchange`, {
       grant_type: "authorization_code",
       code: authorizationCode,
-      client_id: CLIENT_ID,
+      client_id: CURRENT_CLIENT_ID,
       redirect_uri: REDIRECT_URI
     });
 
     const profile = await getJson(
-      `${GATEWAY_URL}/v1/services/${encodeURIComponent(SERVICE_ID)}/profile`,
+      `${GATEWAY_URL}/v1/services/${encodeURIComponent(CURRENT_SERVICE_ID)}/profile`,
       { Authorization: `Bearer ${tokenData.access_token}` }
     );
 
@@ -232,7 +234,7 @@ function startGatewaySessionEventStream() {
         ...init,
         headers: {
           ...(init?.headers || {}),
-          "X-Client-Id": CLIENT_ID,
+          "X-Client-Id": CURRENT_CLIENT_ID,
           "X-Client-Secret": CLIENT_SECRET
         }
       })
@@ -262,8 +264,12 @@ function startGatewaySessionEventStream() {
     }
   });
 
-  es.onerror = () => {
-    dlog("gateway session stream error");
+  es.onopen = () => {
+    dlog("gateway session stream connected");
+  };
+
+  es.onerror = (err) => {
+    dlog(`gateway session stream error: ${err.message || "unknown"}`);
   };
 }
 
@@ -272,18 +278,24 @@ function startGatewayChallengeStream(challengeId) {
     return;
   }
   const es = new EventSource(`${GATEWAY_URL}/v1/service/events?challenge_id=${encodeURIComponent(challengeId)}`, {
-    fetch: (input, init) =>
-      fetch(input, {
+    fetch: (input, init) => {
+      const headers = {
+        ...(init?.headers || {}),
+        "X-Client-Id": CURRENT_CLIENT_ID,
+        "X-Client-Secret": CLIENT_SECRET
+      };
+      return fetch(input, {
         ...init,
-        headers: {
-          ...(init?.headers || {}),
-          "X-Client-Id": CLIENT_ID,
-          "X-Client-Secret": CLIENT_SECRET
-        }
-      })
+        headers
+      });
+    }
   });
   gatewayStreams.set(challengeId, es);
-  dlog(`gateway stream open challenge=${challengeId}`);
+  dlog(`gateway stream opening challenge=${challengeId}`);
+
+  es.onopen = () => {
+    dlog(`gateway stream connected challenge=${challengeId}`);
+  };
 
   es.addEventListener("challenge_verified", async (event) => {
     const data = JSON.parse(event.data);
@@ -316,8 +328,8 @@ function startGatewayChallengeStream(challengeId) {
     dlog(`gateway stream close expired challenge=${challengeId}`);
   });
 
-  es.onerror = () => {
-    dlog(`gateway stream error challenge=${challengeId}`);
+  es.onerror = (err) => {
+    dlog(`gateway stream error challenge=${challengeId}: ${err.message || "connection failed"}`);
     // Auto-reconnect handled by EventSource. Keep stream unless state is terminal.
     const state = challengeStates.get(challengeId);
     if (state && ["active", "denied", "expired", "error"].includes(state.status)) {
@@ -375,11 +387,11 @@ app.post("/auth/start", async (req, res) => {
     }
 
     const challenge = await postJson(`${GATEWAY_URL}/v1/auth/challenge`, {
-      service_id: SERVICE_ID,
-      client_id: CLIENT_ID,
+      service_id: CURRENT_SERVICE_ID,
+      client_id: CURRENT_CLIENT_ID,
       redirect_uri: REDIRECT_URI,
       scopes: requestedScopes,
-      requested_claims: REQUESTED_CLAIMS,
+      requested_claims: DYNAMIC_REQUESTED_CLAIMS,
       did_hint: didHint,
       require_user_approval: true
     }, {
@@ -547,9 +559,9 @@ app.get("/profile", (req, res) => {
   const profileResponse = {
     subject_id: profile?.subject_id || null,
     did: profile?.did || null,
-    service_id: profile?.service_id || SERVICE_ID,
+    service_id: profile?.service_id || CURRENT_SERVICE_ID,
     scope: scopeText || null,
-    requested_claims: Array.isArray(profile?.requested_claims) ? profile.requested_claims : [],
+    requested_claims: Array.isArray(profile?.requested_claims) ? profile.requested_claims : DYNAMIC_REQUESTED_CLAIMS,
     approved_claims: approvedClaims,
     risk_level: profile?.risk_level || "normal",
     session_expires_at: expiresAt
@@ -566,6 +578,44 @@ app.get("/profile", (req, res) => {
   }
 
   return res.json(profileResponse);
+});
+
+app.post("/service/manage", async (req, res) => {
+  try {
+    const { service_id, service_name, requested_fields } = req.body || {};
+    if (!service_id || !requested_fields) {
+      return res.status(400).json({ error: "invalid_request", message: "service_id and requested_fields are required" });
+    }
+
+    const claims = requested_fields.split(",").map(s => s.trim()).filter(Boolean);
+
+    // 1. Update gateway registration
+    // We use CURRENT_CLIENT_ID to authenticate as the current service to the gateway
+    // But we register the NEW service configuration
+    await postJson(`${GATEWAY_URL}/v1/services`, {
+      client_id: service_id, // For simplify, client_id = service_id
+      service_id: service_id,
+      client_secret: CLIENT_SECRET, // Keep same secret for simplicity in this dev environment
+      redirect_uris: [REDIRECT_URI]
+    });
+
+    // 2. Update local state
+    CURRENT_SERVICE_ID = service_id;
+    CURRENT_CLIENT_ID = service_id;
+    DYNAMIC_REQUESTED_CLAIMS = claims;
+
+    console.log(`[service-backend] service managed: ${service_id}, fields: ${claims.join(",")}`);
+
+    return res.json({
+      success: true,
+      service_id: CURRENT_SERVICE_ID,
+      service_name,
+      requested_claims: DYNAMIC_REQUESTED_CLAIMS
+    });
+  } catch (err) {
+    console.error(`[service-backend] service management failed: ${err.message}`);
+    return res.status(500).json({ error: "management_failed", message: err.message });
+  }
 });
 
 app.post("/logout", (req, res) => {

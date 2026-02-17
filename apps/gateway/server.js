@@ -6,10 +6,12 @@ const path = require("path");
 const PORT = process.env.GATEWAY_PORT || 14000;
 const DATA_DIR = path.join(__dirname, "..", "..", "data");
 const DATA_FILE = path.join(DATA_DIR, "gateway.json");
+const SERVICES_FILE = path.join(DATA_DIR, "services.json");
 const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
 const REQUIRE_WALLET_APPROVAL_FOR_REUSE = process.env.REQUIRE_WALLET_APPROVAL_FOR_REUSE !== "0";
 const REQUIRE_LOCAL_WALLET_READY = process.env.LOCAL_WALLET_REQUIRED !== "0";
-const SERVICE_REGISTRY = parseServiceRegistry();
+
+let SERVICE_REGISTRY = new Map();
 
 function dlog(message) {
   if (DEBUG_AUTH) {
@@ -17,22 +19,39 @@ function dlog(message) {
   }
 }
 
-function parseServiceRegistry() {
-  const clientId = process.env.SERVICE_CLIENT_ID || "web-client";
-  const serviceId = process.env.SERVICE_ID || "service-test";
-  const clientSecret = process.env.SERVICE_CLIENT_SECRET || "dev-service-secret";
-  const redirectUri = process.env.SERVICE_REDIRECT_URI || "https://service-test.local/callback";
-  return new Map([
-    [
-      clientId,
-      {
-        client_id: clientId,
-        service_id: serviceId,
-        client_secret: clientSecret,
-        redirect_uris: [redirectUri]
-      }
-    ]
-  ]);
+function loadServiceRegistry() {
+  ensureStore();
+  const defaultClientId = process.env.SERVICE_CLIENT_ID || "web-client";
+  const defaultServiceId = process.env.SERVICE_ID || "service-test";
+  const defaultClientSecret = process.env.SERVICE_CLIENT_SECRET || "dev-service-secret";
+  const defaultRedirectUri = process.env.SERVICE_REDIRECT_URI || "https://service-test.local/callback";
+
+  let services = [];
+  try {
+    const data = JSON.parse(fs.readFileSync(SERVICES_FILE, "utf8"));
+    services = Array.isArray(data) ? data : [];
+  } catch (err) {
+    dlog(`Failed to read services.json: ${err.message}`);
+  }
+
+  const registry = new Map();
+
+  // Add default service if not already in file
+  if (!services.find(s => s.client_id === defaultClientId)) {
+    registry.set(defaultClientId, {
+      client_id: defaultClientId,
+      service_id: defaultServiceId,
+      client_secret: defaultClientSecret,
+      redirect_uris: [defaultRedirectUri]
+    });
+  }
+
+  // Add services from file
+  services.forEach(s => {
+    registry.set(s.client_id, s);
+  });
+
+  SERVICE_REGISTRY = registry;
 }
 
 function authenticateServiceClient(req, res) {
@@ -42,6 +61,10 @@ function authenticateServiceClient(req, res) {
     res.status(401).json({ error: "service_client_auth_required" });
     return null;
   }
+
+  // Refresh registry from disk to pick up dynamic changes
+  loadServiceRegistry();
+
   const service = SERVICE_REGISTRY.get(clientId);
   if (!service || service.client_secret !== clientSecret) {
     res.status(401).json({ error: "invalid_service_client_credentials" });
@@ -64,6 +87,18 @@ function ensureStore() {
     };
     fs.writeFileSync(DATA_FILE, JSON.stringify(initial, null, 2));
   }
+  if (!fs.existsSync(SERVICES_FILE)) {
+    fs.writeFileSync(SERVICES_FILE, JSON.stringify([], null, 2));
+  }
+}
+
+function readServices() {
+  ensureStore();
+  return JSON.parse(fs.readFileSync(SERVICES_FILE, "utf8"));
+}
+
+function writeServices(services) {
+  fs.writeFileSync(SERVICES_FILE, JSON.stringify(services, null, 2));
 }
 
 function readStore() {
@@ -386,8 +421,10 @@ function removeChallengeStream(challengeId, res) {
 function pushChallengeEvent(challengeId, type, payload) {
   const current = challengeStreams.get(challengeId);
   if (!current) {
+    dlog(`pushChallengeEvent failed: no stream for challenge=${challengeId} type=${type}`);
     return;
   }
+  dlog(`pushChallengeEvent challenge=${challengeId} type=${type}`);
   const body = JSON.stringify({ type, payload, at: nowIso() });
   current.forEach((res) => {
     res.write(`event: ${type}\n`);
@@ -438,6 +475,32 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "gateway", now: nowIso() });
 });
 
+app.post("/v1/services", (req, res) => {
+  const service = authenticateServiceClient(req, res);
+  if (!service) {
+    return;
+  }
+  const { client_id, service_id, client_secret, redirect_uris } = req.body || {};
+  if (!client_id || !service_id || !client_secret || !Array.isArray(redirect_uris)) {
+    return res.status(400).json({ error: "invalid_request" });
+  }
+
+  const services = readServices();
+  const existingIndex = services.findIndex((s) => s.client_id === client_id);
+  const newService = { client_id, service_id, client_secret, redirect_uris, updated_at: nowIso() };
+
+  if (existingIndex >= 0) {
+    services[existingIndex] = newService;
+  } else {
+    services.push(newService);
+  }
+
+  writeServices(services);
+  loadServiceRegistry();
+  dlog(`service registered/updated: ${client_id}`);
+  res.json({ success: true, service: newService });
+});
+
 app.get("/v1/wallet/events", (req, res) => {
   const did = req.query.did;
   if (!did) {
@@ -484,12 +547,13 @@ app.get("/v1/service/events", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders?.();
-  dlog(`service events connected challenge_id=${challengeId}`);
+  dlog(`service events connected challenge_id=${challengeId} client_id=${service.client_id}`);
   res.write(`event: connected\n`);
   res.write(`data: ${JSON.stringify({ challenge_id: challengeId, at: nowIso() })}\n\n`);
 
   addChallengeStream(challengeId, res);
   const keepAlive = setInterval(() => {
+    dlog(`service events ping challenge_id=${challengeId}`);
     res.write(`event: ping\ndata: {}\n\n`);
   }, 15000);
 
@@ -1271,6 +1335,8 @@ app.get("/v1/services/:serviceId/profile", requireBearer, (req, res) => {
 
   return res.json(profileResponse);
 });
+
+loadServiceRegistry();
 
 app.listen(PORT, () => {
   console.log(`gateway listening on http://localhost:${PORT} debug=${DEBUG_AUTH ? "on" : "off"}`);
