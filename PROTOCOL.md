@@ -497,6 +497,61 @@ X-Local-Wallet-Ready: 1
 
 ---
 
+### 3.2.1 요청 문법 차이 요약 (Service ↔ Gateway ↔ Wallet)
+
+실제 구현에서는 "요청 정보"가 아래처럼 단계별로 형식이 다릅니다.
+
+1) Service Frontend → Service Backend  
+- `requested_fields`: CSV 문자열
+
+```json
+{
+  "service_id": "my-service",
+  "service_name": "My Service",
+  "requested_fields": "name, email, nickname"
+}
+```
+
+2) Service Backend → Gateway (`POST /v1/auth/challenge`)  
+- `requested_claims`: 문자열 배열
+
+```json
+{
+  "service_id": "my-service",
+  "client_id": "my-service",
+  "redirect_uri": "https://my-service.local/callback",
+  "scopes": ["profile", "email"],
+  "requested_claims": ["name", "email", "nickname"],
+  "service_version": 1,
+  "did_hint": "did:miid:xxx",
+  "require_user_approval": true
+}
+```
+
+3) Gateway → Wallet (`GET /v1/wallet/events`)  
+- HTTP Request Body가 아니라 SSE 이벤트로 전달
+- `requested_claims`는 `payload.requested_claims`에 포함
+
+```text
+event: challenge_created
+data: {
+  "type": "challenge_created",
+  "payload": {
+    "challenge_id": "uuid",
+    "service_id": "my-service",
+    "did_hint": "did:miid:xxx",
+    "scopes": ["profile", "email"],
+    "service_version": 1,
+    "requested_claims": ["name", "email", "nickname"],
+    "policy_hash": "sha256:...",
+    "expires_at": "..."
+  },
+  "at": "..."
+}
+```
+
+---
+
 ### 3.3 GET /v1/service/events (SSE)
 
 Challenge 관련 이벤트를 수신합니다.
@@ -849,7 +904,7 @@ Challenge 만료
 ```
 
 #### `session_created`
-새 세션 생성됨
+새 활성 서비스(Session) 생성됨
 ```json
 {
   "type": "session_created",
@@ -1019,20 +1074,18 @@ Content-Type: application/json
 
 ### 5.4 GET /v1/wallet/sessions
 
-DID의 active 세션 목록을 조회합니다.
+DID의 활성 서비스(Active Services) 목록을 조회합니다.
 
 **Request**
 ```http
 GET /v1/wallet/sessions?did={did} HTTP/1.1
 ```
 
-**Response (200 OK)**
-```json
 {
   "did": "did:miid:xxx",
-  "sessions": [
+  "active_services": [
     {
-      "session_id": "uuid",
+      "active_service_id": "uuid",
       "service_id": "service-test",
       "subject_id": "sub_xxx",
       "scope": "profile email",
@@ -1042,9 +1095,13 @@ GET /v1/wallet/sessions?did={did} HTTP/1.1
       "expires_at": "...",
       "created_at": "..."
     }
-  ]
+  ],
+  "sessions": [...]
 }
 ```
+
+> [!NOTE]
+> 하위 호환성을 위해 `sessions` 필드도 함께 제공될 수 있으나, Wallet App은 `active_services` 필드를 우선적으로 사용합니다.
 
 ---
 
@@ -1454,7 +1511,7 @@ JSON.stringify() 후 UTF-8 bytes로 서명
 | `denied` | 사용자 거부 |
 | `expired` | 만료됨 |
 
-#### Session Status
+#### Active Service Status
 | Status | 설명 |
 |--------|------|
 | `active` | 활성 |

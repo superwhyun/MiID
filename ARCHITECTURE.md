@@ -26,10 +26,20 @@ flowchart TB
 
     subgraph "Service"
         SF["Service Frontend<br/>:3000"]
-        SB["Service Backend<br/>:15000"]
+        subgraph "Service Backend Architecture"
+            SB["Service Backend<br/>:15000"]
+            SDB[("service-backend.db")]
+            RD[("Redis Store")]
+            SB --- SDB
+            SB --- RD
+        end
     end
 
-    AG["Auth Gateway<br/>:14000"]
+    subgraph "Auth Gateway Architecture"
+        AG["Auth Gateway<br/>:14000"]
+        GDB[("gateway.db")]
+        AG --- GDB
+    end
 
     U -->|"interacts"| B
     U -->|"approve/deny"| AW
@@ -55,7 +65,7 @@ flowchart LR
 
     subgraph "Session Flow"
         S1["Auth Code Issued"] --> S2["Token Exchange"]
-        S2 --> S3["Session Active"]
+        S2 --> S3["Active Service Created"]
     end
 
     subgraph "SSE Streams"
@@ -99,8 +109,8 @@ sequenceDiagram
     Note over Gateway,Wallet: 3. Wallet 이벤트 전달
     Gateway-->>Wallet: challenge_created (SSE)
 
-    alt 자동 승인 (기존 세션 존재)
-        Wallet->>Wallet: Check existing session for service
+    alt 자동 승인 (기존 활성 서비스 존재)
+        Wallet->>Wallet: Check existing active services
         Wallet->>Wallet: Get claim policy for (DID, serviceId)
         Wallet->>WalletServer: POST /v1/wallets/sign
         WalletServer-->>Wallet: { signature }
@@ -283,7 +293,7 @@ flowchart TB
     end
 
     subgraph "Data Store"
-        DS["gateway.json"]
+        DS[("gateway.db")]
         CH["challenges"]
         AC["authCodes"]
         SU["subjects"]
@@ -291,21 +301,45 @@ flowchart TB
         SE["sessions"]
     end
 
-    A1 --> CH
-    A2 --> CH
-    A3 --> AC
-    A3 --> SE
-    A4 --> CH
-    A4 --> AC
-
-    DS --> CH
-    DS --> AC
-    DS --> SU
-    DS --> CO
-    DS --> SE
+    DS --- CH
+    DS --- AC
+    DS --- SU
+    DS --- CO
+    DS --- SE
 ```
 
-## 8) Service Client Authentication
+### Service Backend
+
+Service Backend는 서비스 설정 및 클라이언트 정보를 SQLite에 저장하고, 런타임 세션 정보를 Redis에 캐싱합니다.
+
+```mermaid
+flowchart TB
+    subgraph "API & Logic"
+        API["Express App"]
+        SH["SSE Hub"]
+        RC["Redis Client"]
+    end
+
+    subgraph "Persistent Store"
+        SDB[("service-backend.db")]
+        SC["service_configs"]
+    end
+
+    subgraph "Runtime Store (Redis)"
+        RD[("Redis")]
+        RS["sessions"]
+        RCH["challenges"]
+    end
+
+    API --> SDB
+    SDB --> SC
+    API --> RC
+    RC --> RD
+    RD --> RS
+    RD --> RCH
+```
+
+### Service Client Authentication
 
 Service Backend는 Gateway API 호출 시 클라이언트 인증이 필요합니다.
 
@@ -372,6 +406,7 @@ flowchart LR
 
 ### Gateway
 - `GATEWAY_PORT`: Gateway 포트 (기본 14000)
+- `GATEWAY_DB_FILE`: SQLite 데이터베이스 경로 (data/gateway.db)
 - `DEBUG_AUTH`: 디버그 로그 활성화
 - `SERVICE_CLIENT_ID`, `SERVICE_CLIENT_SECRET`: 서비스 클라이언트 인증
 - `REQUIRE_WALLET_APPROVAL_FOR_REUSE`: 세션 재사용 시 월렛 승인 필요 여부
@@ -389,6 +424,8 @@ flowchart LR
 - `GATEWAY_URL`: Gateway URL
 - `LOCAL_WALLET_URL`: 로컬 월렛 URL
 - `LOCAL_WALLET_REQUIRED`: 로컬 월렛 필수 여부
+- `REDIS_URL`: Redis 저장소 URL (기본 redis://127.0.0.1:6379)
+- `SERVICE_DB_FILE`: 서비스 설정 DB 경로 (data/service-backend.db)
 - `CLIENT_ID`, `CLIENT_SECRET`: Gateway 인증 정보 (초기값)
 - `SERVICE_ID`: 서비스 식별자 (초기값)
 - `SERVICE_AUTO_FINALIZE`: 자동 finalize 여부
