@@ -1337,9 +1337,6 @@ app.post("/v1/token/exchange", (req, res) => {
   if (!authCode) {
     return res.status(400).json({ error: "invalid_code" });
   }
-  if (authCode.used_at) {
-    return res.status(409).json({ error: "code_already_used" });
-  }
   if (new Date(authCode.expires_at) < new Date()) {
     return res.status(401).json({ error: "code_expired" });
   }
@@ -1349,6 +1346,11 @@ app.post("/v1/token/exchange", (req, res) => {
     authCode.service_id !== service.service_id
   ) {
     return res.status(401).json({ error: "client_or_redirect_mismatch" });
+  }
+
+  const consumed = store.consumeAuthCodeIfUnused(code, store.nowIso());
+  if (!consumed) {
+    return res.status(409).json({ error: "code_already_used" });
   }
 
   try {
@@ -1402,7 +1404,6 @@ app.post("/v1/token/exchange", (req, res) => {
       }
     }
 
-    store.updateAuthCodeUsed(code, store.nowIso());
     const revokedOthers = store.revokeOtherActiveSessionsByDidService(targetSession.service_id, targetSession.did, targetSession.id);
     revokedOthers.forEach((revoked) => {
       pushWalletEvent(revoked.did, "session_revoked", {

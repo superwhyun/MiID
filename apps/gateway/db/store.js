@@ -226,6 +226,16 @@ function updateAuthCodeUsed(code, usedAt) {
   db.prepare("UPDATE auth_codes SET used_at = ? WHERE code = ?").run(usedAt, code);
 }
 
+function consumeAuthCodeIfUnused(code, usedAt) {
+  const db = getDb();
+  const result = db.prepare(`
+    UPDATE auth_codes
+    SET used_at = ?
+    WHERE code = ? AND used_at IS NULL
+  `).run(usedAt, code);
+  return result.changes === 1;
+}
+
 // ============== Subjects ==============
 
 function findOrCreateSubject(did, serviceId) {
@@ -603,6 +613,7 @@ module.exports = {
   findLatestAuthCodeByChallengeId,
   findApprovedAuthCodes,
   updateAuthCodeUsed,
+  consumeAuthCodeIfUnused,
 
   // Subjects
   findOrCreateSubject,
