@@ -638,8 +638,9 @@ function openWindow() {
   dlog("window opened");
 }
 
-function showApproveNotification(serviceId, scopes, newClaims = []) {
-  dlog(`notification service=${serviceId} scopes=${(scopes || []).join(",")} newClaims=${(newClaims || []).join(",")}`);
+function showApproveNotification(serviceName, scopes, newClaims = []) {
+  const displayName = serviceName || "unknown-service";
+  dlog(`notification service=${displayName} scopes=${(scopes || []).join(",")} newClaims=${(newClaims || []).join(",")}`);
   if (POPUP_ON_CHALLENGE) {
     openWindow();
   }
@@ -647,8 +648,8 @@ function showApproveNotification(serviceId, scopes, newClaims = []) {
     const hasNewClaims = newClaims && newClaims.length > 0;
     const title = hasNewClaims ? "MiID 추가 정보 요청" : "MiID 승인 요청";
     const body = hasNewClaims
-      ? `${serviceId}가 새로운 정보를 요청합니다: ${newClaims.join(", ")}`
-      : `${serviceId}가 ${scopes.join(", ")} 요청`;
+      ? `${displayName}가 새로운 정보를 요청합니다: ${newClaims.join(", ")}`
+      : `${displayName}가 ${scopes.join(", ")} 요청`;
     const n = new Notification({ title, body });
     n.on("click", () => openWindow());
     n.show();
@@ -657,19 +658,21 @@ function showApproveNotification(serviceId, scopes, newClaims = []) {
   }
 }
 
-function showAutoApprovedNotification(serviceId, scopes) {
+function showAutoApprovedNotification(serviceName, scopes) {
+  const displayName = serviceName || "unknown-service";
   const n = new Notification({
     title: "MiID 자동 승인",
-    body: `${serviceId} ${scopes.join(", ")} 자동 승인됨`
+    body: `${displayName} ${scopes.join(", ")} 자동 승인됨`
   });
   n.on("click", () => openWindow());
   n.show();
 }
 
-function showReusedLoginNotification(serviceId, scopes) {
+function showReusedLoginNotification(serviceName, scopes) {
+  const displayName = serviceName || "unknown-service";
   const n = new Notification({
     title: "MiID 로그인",
-    body: `${serviceId} 로그인 재사용 (${scopes.join(", ")})`
+    body: `${displayName} 로그인 재사용 (${scopes.join(", ")})`
   });
   n.on("click", () => openWindow());
   n.show();
@@ -678,6 +681,7 @@ function showReusedLoginNotification(serviceId, scopes) {
 async function handleWalletEvent(data, sourceDid) {
   if (data.type === "challenge_created") {
     const serviceId = data.payload.service_id;
+    const serviceName = data.payload.service_name || serviceId;
     const scopes = data.payload.scopes || [];
     const requestedClaims = data.payload.requested_claims || [];
     const serviceVersion = Number.isInteger(data.payload.service_version)
@@ -727,28 +731,29 @@ async function handleWalletEvent(data, sourceDid) {
     }
     if (autoApprove) {
       dlog(`auto-approve start challenge=${challengeId} did=${targetDid}`);
-      showAutoApprovedNotification(serviceId, scopes);
+      showAutoApprovedNotification(serviceName, scopes);
       try {
         await approveChallenge(challengeId, targetDid, autoApprovedClaims);
         dlog(`auto-approve success challenge=${challengeId}`);
       } catch (err) {
         dlog(`auto-approve failed challenge=${challengeId} err=${err.message}`);
-        showApproveNotification(serviceId, scopes, newClaims);
+        showApproveNotification(serviceName, scopes, newClaims);
       }
     } else {
       if (newClaims.length > 0) {
         dlog(`new claims detected challenge=${challengeId} newClaims=${newClaims.join(",")}`);
       }
-      showApproveNotification(serviceId, scopes, newClaims);
+      showApproveNotification(serviceName, scopes, newClaims);
     }
     return;
   }
 
   if (data.type === "login_reused") {
     const serviceId = data.payload.service_id;
+    const serviceName = data.payload.service_name || serviceId;
     const scopes = data.payload.scopes || [];
     dlog(`event login_reused service=${serviceId} did=${sourceDid}`);
-    showReusedLoginNotification(serviceId, scopes);
+    showReusedLoginNotification(serviceName, scopes);
   }
 }
 

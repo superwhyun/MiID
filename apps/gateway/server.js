@@ -40,6 +40,7 @@ function loadServiceRegistry() {
   const defaultServiceId = process.env.SERVICE_ID || "service-test";
   const defaultClientSecret = process.env.SERVICE_CLIENT_SECRET || "dev-service-secret";
   const defaultRedirectUri = process.env.SERVICE_REDIRECT_URI || "https://service-test.local/callback";
+  const defaultServiceName = process.env.SERVICE_NAME || "Default Service";
 
   let services = [];
   try {
@@ -60,6 +61,7 @@ function loadServiceRegistry() {
     registry.set(defaultClientId, {
       client_id: defaultClientId,
       service_id: defaultServiceId,
+      service_name: defaultServiceName,
       client_secret: defaultClientSecret,
       redirect_uris: [defaultRedirectUri],
       default_scopes: defaultPolicy.default_scopes,
@@ -73,6 +75,7 @@ function loadServiceRegistry() {
   services.forEach(s => {
     const normalized = {
       ...s,
+      service_name: s.service_name || (s.service_id === defaultServiceId ? defaultServiceName : s.service_id),
       default_scopes: normalizeScopes(s.default_scopes),
       requested_claims: normalizeRequestedClaims(s.requested_claims),
       risk_action: s.risk_action || null
@@ -112,6 +115,32 @@ function authenticateServiceClient(req, res) {
     return null;
   }
   return service;
+}
+
+function getServiceNameByServiceId(serviceId) {
+  if (!serviceId) {
+    return null;
+  }
+  loadServiceRegistry();
+  const direct = SERVICE_REGISTRY.get(serviceId);
+  if (direct && direct.service_id === serviceId) {
+    return direct.service_name || direct.service_id || serviceId;
+  }
+  let fallback = null;
+  for (const service of SERVICE_REGISTRY.values()) {
+    if (service.service_id === serviceId) {
+      if (!fallback) {
+        fallback = service;
+      }
+      if (service.client_id === serviceId) {
+        return service.service_name || service.service_id || serviceId;
+      }
+    }
+  }
+  if (fallback) {
+    return fallback.service_name || fallback.service_id || serviceId;
+  }
+  return serviceId;
 }
 
 function toPayloadString(payload) {
@@ -457,6 +486,7 @@ app.post("/v1/services", (req, res) => {
   const {
     client_id,
     service_id,
+    service_name,
     client_secret,
     redirect_uris,
     requested_claims,
@@ -484,6 +514,7 @@ app.post("/v1/services", (req, res) => {
   const newService = {
     client_id,
     service_id,
+    service_name: service_name || existingService?.service_name || service_id,
     client_secret,
     redirect_uris,
     default_scopes: nextPolicy.default_scopes,
@@ -711,6 +742,7 @@ app.post("/v1/auth/challenge", (req, res) => {
   const eventPayload = {
     challenge_id: challenge.id,
     service_id: challenge.service_id,
+    service_name: service.service_name || service.service_id,
     did_hint: challenge.did_hint,
     scopes: challenge.scopes,
     service_version: challenge.service_version,
@@ -783,6 +815,7 @@ app.post("/v1/wallet/notify-reuse", (req, res) => {
   }
   const payload = {
     service_id: service.service_id,
+    service_name: service.service_name || service.service_id,
     scopes: Array.isArray(scopes) ? scopes : [],
     reused: true,
     at: store.nowIso()
@@ -885,6 +918,7 @@ app.get("/v1/wallet/challenges", (req, res) => {
   const pending = challenges.map((c) => ({
     challenge_id: c.id,
     service_id: c.service_id,
+    service_name: getServiceNameByServiceId(c.service_id),
     client_id: c.client_id,
     nonce: c.nonce,
     scopes: c.scopes,
@@ -909,6 +943,7 @@ app.get("/v1/wallet/sessions", (req, res) => {
   const result = sessions.map((s) => ({
     session_id: s.id,
     service_id: s.service_id,
+    service_name: getServiceNameByServiceId(s.service_id),
     subject_id: s.subject_id,
     scope: s.scope,
     requested_claims: Array.isArray(s.requested_claims) ? s.requested_claims : [],
@@ -932,6 +967,7 @@ app.get("/v1/wallet/approved", (req, res) => {
     authorization_code: c.code,
     challenge_id: c.challenge_id,
     service_id: c.service_id,
+    service_name: getServiceNameByServiceId(c.service_id),
     client_id: c.client_id,
     redirect_uri: c.redirect_uri,
     subject_id: c.subject_id,
@@ -985,7 +1021,8 @@ app.delete("/v1/wallet/approved/:authCode", (req, res) => {
   pushWalletEvent(did, "approved_cancelled", {
     challenge_id: challenge.id,
     authorization_code: authCode.code,
-    service_id: authCode.service_id
+    service_id: authCode.service_id,
+    service_name: getServiceNameByServiceId(authCode.service_id)
   });
   return res.json({
     challenge_id: challenge.id,
@@ -1018,7 +1055,8 @@ app.delete("/v1/wallet/sessions/:sessionId", (req, res) => {
   dlog(`session revoked did=${did} session=${session.id}`);
   pushWalletEvent(did, "session_revoked", {
     session_id: session.id,
-    service_id: session.service_id
+    service_id: session.service_id,
+    service_name: getServiceNameByServiceId(session.service_id)
   });
   pushServiceSessionEvent(session.service_id, "session_revoked", {
     session_id: session.id,
@@ -1120,7 +1158,8 @@ app.post("/v1/wallet/challenges/:challengeId/approve", async (req, res) => {
     pushWalletEvent(did, "challenge_approved", {
       challenge_id: challenge.id,
       authorization_code: authCode.code,
-      service_id: challenge.service_id
+      service_id: challenge.service_id,
+      service_name: getServiceNameByServiceId(challenge.service_id)
     });
     return respondApproved(authCode);
   } catch (err) {
@@ -1151,7 +1190,11 @@ app.post("/v1/wallet/challenges/:challengeId/deny", (req, res) => {
 
   dlog(`challenge denied id=${challenge.id} did=${did}`);
   pushChallengeEvent(challenge.id, "challenge_denied", { challenge_id: challenge.id, service_id: challenge.service_id });
-  pushWalletEvent(did, "challenge_denied", { challenge_id: challenge.id, service_id: challenge.service_id });
+  pushWalletEvent(did, "challenge_denied", {
+    challenge_id: challenge.id,
+    service_id: challenge.service_id,
+    service_name: getServiceNameByServiceId(challenge.service_id)
+  });
   return res.json({ challenge_id: challenge.id, status: "denied", denied_at: deniedAt });
 });
 
@@ -1257,7 +1300,8 @@ app.post("/v1/token/exchange", (req, res) => {
     revokedOthers.forEach((revoked) => {
       pushWalletEvent(revoked.did, "session_revoked", {
         session_id: revoked.id,
-        service_id: revoked.service_id
+        service_id: revoked.service_id,
+        service_name: getServiceNameByServiceId(revoked.service_id)
       });
       pushServiceSessionEvent(revoked.service_id, "session_revoked", {
         session_id: revoked.id,
@@ -1270,6 +1314,7 @@ app.post("/v1/token/exchange", (req, res) => {
     pushWalletEvent(targetSession.did, "session_created", {
       session_id: targetSession.id,
       service_id: targetSession.service_id,
+      service_name: getServiceNameByServiceId(targetSession.service_id),
       scope: targetSession.scope,
       expires_at: targetSession.expires_at,
       reused: true
@@ -1369,7 +1414,8 @@ app.delete("/v1/consents/:consentId", (req, res) => {
   revokedSessions.forEach((s) => {
     pushWalletEvent(s.did, "session_revoked", {
       session_id: s.id,
-      service_id: consent.service_id
+      service_id: consent.service_id,
+      service_name: getServiceNameByServiceId(consent.service_id)
     });
     pushServiceSessionEvent(consent.service_id, "session_revoked", {
       session_id: s.id,

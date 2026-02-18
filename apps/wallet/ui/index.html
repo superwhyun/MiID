@@ -186,11 +186,18 @@
         display: flex;
         align-items: center;
         gap: 8px;
+        min-width: 0;
       }
       
       .service-name::before {
         content: "🔗";
         font-size: 14px;
+      }
+
+      .service-name-id {
+        font-size: 12px;
+        font-weight: 500;
+        color: #64748b;
       }
       
       /* Claims */
@@ -814,7 +821,7 @@
       <div id="status"></div>
       
       <!-- 새로운 요청 -->
-      <section class="section">
+      <section id="pendingSection" class="section">
         <div class="section-header">
           <h2 class="section-title"><span class="icon">📬</span> 새로운 요청</h2>
           <span id="pendingCount" class="badge hidden">0</span>

@@ -701,6 +701,7 @@ app.post("/service/:id/register", async (req, res) => {
     const registered = await postJson(`${GATEWAY_URL}/v1/services`, {
       client_id: config.client_id,
       service_id: config.service_id,
+      service_name: config.service_name,
       client_secret: config.client_secret,
       redirect_uris: [config.redirect_uri],
       requested_claims: config.requested_claims,

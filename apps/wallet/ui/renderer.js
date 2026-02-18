@@ -1,6 +1,7 @@
 const didsEl = document.getElementById("dids");
 const addDidBtn = document.getElementById("addDidBtn");
 const listEl = document.getElementById("list");
+const pendingSectionEl = document.getElementById("pendingSection");
 const statusEl = document.getElementById("status");
 const didLabelEl = document.getElementById("didLabel");
 const pendingCountEl = document.getElementById("pendingCount");
@@ -92,6 +93,23 @@ function shortenDid(did) {
 function getInitials(name) {
   if (!name || typeof name !== "string") return "?";
   return name.slice(0, 2).toUpperCase();
+}
+
+function createServiceNameNode(serviceName, serviceId) {
+  const el = document.createElement("div");
+  el.className = "service-name";
+
+  const primary = document.createElement("span");
+  primary.textContent = serviceName || serviceId || "-";
+  el.appendChild(primary);
+
+  if (serviceName && serviceId && serviceName !== serviceId) {
+    const secondary = document.createElement("span");
+    secondary.className = "service-name-id";
+    secondary.textContent = `(${serviceId})`;
+    el.appendChild(secondary);
+  }
+  return el;
 }
 
 async function loadWalletsData() {
@@ -398,9 +416,7 @@ function createActiveServiceCard(activeService) {
   const header = document.createElement("div");
   header.className = "card-header";
 
-  const title = document.createElement("div");
-  title.className = "service-name";
-  title.textContent = activeService.service_id;
+  const title = createServiceNameNode(activeService.service_name, activeService.service_id);
   header.appendChild(title);
   wrapper.appendChild(header);
 
@@ -482,9 +498,7 @@ function createApprovedCard(item) {
   const header = document.createElement("div");
   header.className = "card-header";
 
-  const title = document.createElement("div");
-  title.className = "service-name";
-  title.textContent = item.service_id;
+  const title = createServiceNameNode(item.service_name, item.service_id);
   header.appendChild(title);
   wrapper.appendChild(header);
 
@@ -709,9 +723,7 @@ async function createChallengeCard(challenge) {
   const header = document.createElement("div");
   header.className = "card-header";
 
-  const title = document.createElement("div");
-  title.className = "service-name";
-  title.textContent = challenge.service_id;
+  const title = createServiceNameNode(challenge.service_name, challenge.service_id);
   header.appendChild(title);
   wrapper.appendChild(header);
 
@@ -870,17 +882,10 @@ async function loadChallenges() {
 
     pendingCountEl.textContent = challenges.length || 0;
     pendingCountEl.classList.toggle("hidden", challenges.length === 0);
+    pendingSectionEl.classList.toggle("hidden", challenges.length === 0);
 
     listEl.innerHTML = "";
     if (challenges.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "empty-state";
-      empty.innerHTML = `
-        <div class="empty-state-icon">📭</div>
-        <div class="empty-state-text">새로운 요청이 없어요</div>
-        <div class="empty-state-hint">서비스에서 로그인을 요청하면 여기에 표시됩니다</div>
-      `;
-      listEl.appendChild(empty);
       return;
     }
 
