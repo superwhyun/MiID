@@ -3,6 +3,9 @@
 
   const API_BASE = "/api";
   const servicesState = new Map(); // Stores state for each service: { authStream, challengeId, profile, status }
+  let isDeletingConfig = false;
+  let deleteConfirmServiceId = null;
+  let deleteConfirmTimer = null;
 
   const elements = {
     screenDeck: document.getElementById("screen-deck"),
@@ -16,6 +19,7 @@
     inputServiceName: document.getElementById("input-service-name"),
     inputFields: document.getElementById("input-fields"),
     btnSaveManage: document.getElementById("btn-save-manage"),
+    btnDeleteManage: document.getElementById("btn-delete-manage"),
     btnCloseManage: document.getElementById("btn-close-manage"),
     manageError: document.getElementById("manage-error")
   };
@@ -126,6 +130,24 @@
     updateCardUI(config.service_id);
   }
 
+  function removeServiceFromUI(serviceId) {
+    const state = servicesState.get(serviceId);
+    if (state?.authStream) state.authStream.close();
+    if (state?.sessionStream) state.sessionStream.close();
+    const card = document.querySelector(`.service-card[data-service-id="${serviceId}"]`);
+    if (card) card.remove();
+    servicesState.delete(serviceId);
+  }
+
+  function resetDeleteConfirmState() {
+    if (deleteConfirmTimer) {
+      clearTimeout(deleteConfirmTimer);
+      deleteConfirmTimer = null;
+    }
+    deleteConfirmServiceId = null;
+    elements.btnDeleteManage.textContent = "Delete Service";
+  }
+
   async function loadServices() {
     try {
       const services = await apiCall("GET", "/services");
@@ -142,9 +164,7 @@
       const newIds = new Set(services.map(s => s.service_id));
       for (const id of servicesState.keys()) {
         if (!newIds.has(id)) {
-          const card = document.querySelector(`.service-card[data-service-id="${id}"]`);
-          if (card) card.remove();
-          servicesState.delete(id);
+          removeServiceFromUI(id);
         }
       }
     } catch (err) {
@@ -285,6 +305,9 @@
       elements.inputServiceName.value = "";
       elements.inputFields.value = "name, email, nickname";
     }
+    elements.btnDeleteManage.disabled = false;
+    resetDeleteConfirmState();
+    elements.btnDeleteManage.classList.toggle("hidden", !serviceId);
     elements.modalManage.classList.add("active");
   }
 
@@ -305,6 +328,47 @@
     } catch (err) {
       elements.manageError.textContent = err.message;
       elements.manageError.classList.remove("hidden");
+    }
+  }
+
+  async function deleteConfig(event) {
+    if (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    if (isDeletingConfig) return;
+
+    const originalId = elements.inputOriginalId.value;
+    if (!originalId) return;
+
+    if (deleteConfirmServiceId !== originalId) {
+      deleteConfirmServiceId = originalId;
+      elements.btnDeleteManage.textContent = "Confirm Delete";
+      elements.manageError.textContent = "한 번 더 누르면 서비스가 삭제됩니다.";
+      elements.manageError.classList.remove("hidden");
+      deleteConfirmTimer = setTimeout(() => {
+        resetDeleteConfirmState();
+        elements.manageError.classList.add("hidden");
+      }, 5000);
+      return;
+    }
+
+    isDeletingConfig = true;
+    elements.btnDeleteManage.disabled = true;
+    elements.manageError.classList.add("hidden");
+
+    try {
+      await apiCall("DELETE", `/service/${encodeURIComponent(originalId)}`);
+      elements.modalManage.classList.remove("active");
+      removeServiceFromUI(originalId);
+      await loadServices();
+    } catch (err) {
+      elements.manageError.textContent = err.message;
+      elements.manageError.classList.remove("hidden");
+    } finally {
+      isDeletingConfig = false;
+      elements.btnDeleteManage.disabled = false;
+      resetDeleteConfirmState();
     }
   }
 
@@ -334,7 +398,11 @@
 
   elements.btnAddService.addEventListener("click", () => openManageModal());
   elements.btnSaveManage.addEventListener("click", saveConfig);
-  elements.btnCloseManage.addEventListener("click", () => elements.modalManage.classList.remove("active"));
+  elements.btnDeleteManage.addEventListener("click", deleteConfig);
+  elements.btnCloseManage.addEventListener("click", () => {
+    resetDeleteConfirmState();
+    elements.modalManage.classList.remove("active");
+  });
 
   // --- Init ---
 

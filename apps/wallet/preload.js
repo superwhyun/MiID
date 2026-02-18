@@ -8,11 +8,15 @@ contextBridge.exposeInMainWorld("miid", {
   updateProfile: (payload) => ipcRenderer.invoke("profile:update", payload),
   listChallenges: () => ipcRenderer.invoke("challenges:list"),
   listApproved: () => ipcRenderer.invoke("approved:list"),
-  listSessions: () => ipcRenderer.invoke("sessions:list"),
+  listActiveServices: () => ipcRenderer.invoke("active-services:list"),
+  // Backward-compatible alias
+  listSessions: () => ipcRenderer.invoke("active-services:list"),
   approve: (payload) => ipcRenderer.invoke("challenge:approve", payload),
   deny: (payload) => ipcRenderer.invoke("challenge:deny", payload),
   cancelApproved: (payload) => ipcRenderer.invoke("approved:cancel", payload),
-  revokeSession: (payload) => ipcRenderer.invoke("session:revoke", payload),
+  disconnectActiveService: (payload) => ipcRenderer.invoke("active-service:disconnect", payload),
+  // Backward-compatible alias
+  revokeSession: (payload) => ipcRenderer.invoke("active-service:disconnect", payload),
   setClaimPolicy: (payload) => ipcRenderer.invoke("claim-policy:set", payload),
   getClaimPolicy: (payload) => ipcRenderer.invoke("claim-policy:get", payload),
   deleteWallet: (payload) => ipcRenderer.invoke("wallets:delete", payload),

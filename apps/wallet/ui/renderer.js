@@ -15,7 +15,7 @@ const policyCache = new Map();
 const expandedDids = new Set();
 
 let wallets = [];
-let sessionsByDid = new Map();
+let activeServicesByDid = new Map();
 let approvedByDid = new Map();
 let profileFields = [];
 let currentEditingDid = null;
@@ -71,6 +71,18 @@ function setPolicy(did, serviceId, claims) {
   window.miid.setClaimPolicy({ did, serviceId, claims: normalized }).catch(() => { });
 }
 
+// 기존 활성 서비스에서 해당 서비스에 대해 승인된 claims 조회
+async function getExistingApprovedClaims(serviceId, did) {
+  if (!did) return [];
+  try {
+    const activeServices = activeServicesByDid.get(did) || [];
+    const matchingActiveService = activeServices.find((s) => s.service_id === serviceId && !s.revoked_at);
+    return matchingActiveService?.approved_claims || [];
+  } catch (_err) {
+    return [];
+  }
+}
+
 function shortenDid(did) {
   if (!did || typeof did !== "string") return "-";
   if (did.length <= 20) return did;
@@ -96,19 +108,19 @@ async function loadWalletsData() {
   }
 }
 
-async function loadSessionsData() {
-  const data = await window.miid.listSessions();
-  const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
-  await Promise.all(sessions.map((s) => getPolicy(s.did, s.service_id)));
+async function loadActiveServicesData() {
+  const data = await window.miid.listActiveServices();
+  const activeServices = Array.isArray(data?.active_services) ? data.active_services : [];
+  await Promise.all(activeServices.map((s) => getPolicy(s.did, s.service_id)));
 
   const grouped = new Map();
-  sessions.forEach((session) => {
-    const did = session.did || "unknown";
+  activeServices.forEach((activeService) => {
+    const did = activeService.did || "unknown";
     const list = grouped.get(did) || [];
-    list.push(session);
+    list.push(activeService);
     grouped.set(did, list);
   });
-  sessionsByDid = grouped;
+  activeServicesByDid = grouped;
 }
 
 async function loadApprovedData() {
@@ -354,7 +366,7 @@ async function confirmDeleteDid() {
     expandedDids.delete(currentDeletingDid);
 
     await loadWalletsData();
-    await loadSessionsData();
+    await loadActiveServicesData();
     await loadApprovedData();
     renderDids();
     closeDeleteModal();
@@ -379,22 +391,22 @@ function createClaimChip(claim, active, onToggle) {
   return chip;
 }
 
-function createSessionCard(session) {
+function createActiveServiceCard(activeService) {
   const wrapper = document.createElement("div");
-  wrapper.className = "session-card";
+  wrapper.className = "service-card";
 
   const header = document.createElement("div");
   header.className = "card-header";
 
   const title = document.createElement("div");
   title.className = "service-name";
-  title.textContent = session.service_id;
+  title.textContent = activeService.service_id;
   header.appendChild(title);
   wrapper.appendChild(header);
 
-  const requestedClaims = Array.isArray(session.requested_claims) ? session.requested_claims : [];
-  const approvedClaims = Array.isArray(session.approved_claims) ? session.approved_claims : [];
-  const policyClaims = policyCache.get(policyKey(session.did, session.service_id));
+  const requestedClaims = Array.isArray(activeService.requested_claims) ? activeService.requested_claims : [];
+  const approvedClaims = Array.isArray(activeService.approved_claims) ? activeService.approved_claims : [];
+  const policyClaims = policyCache.get(policyKey(activeService.did, activeService.service_id));
   const selected = new Set(Array.isArray(policyClaims) && policyClaims.length > 0 ? policyClaims : approvedClaims);
 
   const claimsSection = document.createElement("div");
@@ -408,7 +420,7 @@ function createSessionCard(session) {
       else selected.add(claim);
       chip.classList.toggle("active", selected.has(claim));
       chip.setAttribute("aria-pressed", selected.has(claim) ? "true" : "false");
-      setPolicy(session.did, session.service_id, requestedClaims.filter((c) => selected.has(c)));
+      setPolicy(activeService.did, activeService.service_id, requestedClaims.filter((c) => selected.has(c)));
       clearStatus();
     });
     chips.appendChild(chip);
@@ -419,13 +431,14 @@ function createSessionCard(session) {
 
   const meta = document.createElement("div");
   meta.className = "meta";
-  const riskLevel = session.risk_level || "medium";
+  const riskLevel = activeService.risk_level || "medium";
   const riskClass = riskLevel === "high" ? "risk-high" : riskLevel === "low" ? "risk-low" : "risk-medium";
   const riskText = riskLevel === "high" ? "높음" : riskLevel === "low" ? "낮음" : "중간";
 
   meta.innerHTML = `
+    <span class="meta-item">✅ 활성 서비스</span>
     <span class="meta-item"><span class="risk-badge ${riskClass}">보안 ${riskText}</span></span>
-    <span class="meta-item">⏰ ${session.expires_at || "만료 정보 없음"}까지</span>
+    <span class="meta-item">⏰ ${activeService.expires_at || "만료 정보 없음"}까지</span>
   `;
   wrapper.appendChild(meta);
 
@@ -436,8 +449,19 @@ function createSessionCard(session) {
   revokeBtn.innerHTML = "🔗 연결 해제";
   revokeBtn.onclick = async () => {
     try {
-      await window.miid.revokeSession({ sessionId: session.session_id, did: session.did });
-      await loadSessionsData();
+      const payload = {
+        activeServiceId: activeService.active_service_id || activeService.session_id,
+        serviceId: activeService.service_id,
+        did: activeService.did
+      };
+      if (typeof window.miid.disconnectActiveService === "function") {
+        await window.miid.disconnectActiveService(payload);
+      } else if (typeof window.miid.revokeSession === "function") {
+        await window.miid.revokeSession(payload);
+      } else {
+        throw new Error("disconnect_api_not_available");
+      }
+      await loadActiveServicesData();
       await loadApprovedData();
       renderDids();
       clearStatus();
@@ -453,7 +477,7 @@ function createSessionCard(session) {
 
 function createApprovedCard(item) {
   const wrapper = document.createElement("div");
-  wrapper.className = "session-card";
+  wrapper.className = "service-card";
 
   const header = document.createElement("div");
   header.className = "card-header";
@@ -482,7 +506,7 @@ function createApprovedCard(item) {
 
   const meta = document.createElement("div");
   meta.className = "meta";
-  meta.innerHTML = `<span class="meta-item">⏳ 승인 완료 · ⏰ ${item.expires_at || "만료 정보 없음"}까지</span>`;
+  meta.innerHTML = `<span class="meta-item">✅ 승인 완료 · 교환 대기 · ⏰ ${item.expires_at || "만료 정보 없음"}까지</span>`;
   wrapper.appendChild(meta);
   return wrapper;
 }
@@ -498,10 +522,10 @@ function createDidCard(wallet) {
   info.className = "did-info";
 
   const didApproved = approvedByDid.get(wallet.did) || [];
-  const didSessions = sessionsByDid.get(wallet.did) || [];
+  const didActiveServices = activeServicesByDid.get(wallet.did) || [];
   const connectedServices = new Set();
   didApproved.forEach((item) => connectedServices.add(item.service_id));
-  didSessions.forEach((item) => connectedServices.add(item.service_id));
+  didActiveServices.forEach((item) => connectedServices.add(item.service_id));
 
   // Unified Profile에서 이름/닉네임 추출
   const cardProfile = wallet.profile || {};
@@ -586,33 +610,33 @@ function createDidCard(wallet) {
     wrapper.appendChild(preview);
   }
 
-  // 세션 목록
-  const sessionsPanel = document.createElement("div");
-  sessionsPanel.className = "did-sessions";
+  // 활성 서비스 목록
+  const activeServicesPanel = document.createElement("div");
+  activeServicesPanel.className = "did-services";
 
   if (didApproved.length > 0) {
     const approvedGroup = document.createElement("div");
-    approvedGroup.className = "session-group";
+    approvedGroup.className = "service-group";
     const approvedTitle = document.createElement("div");
-    approvedTitle.className = "session-group-title";
-    approvedTitle.innerHTML = "⏳ 승인 대기 중";
+    approvedTitle.className = "service-group-title";
+    approvedTitle.innerHTML = "✅ 승인 완료 (서비스 교환 대기)";
     approvedGroup.appendChild(approvedTitle);
     didApproved.forEach((item) => approvedGroup.appendChild(createApprovedCard(item)));
-    sessionsPanel.appendChild(approvedGroup);
+    activeServicesPanel.appendChild(approvedGroup);
   }
 
-  if (didSessions.length > 0) {
+  if (didActiveServices.length > 0) {
     const activeGroup = document.createElement("div");
-    activeGroup.className = "session-group";
+    activeGroup.className = "service-group";
     const activeTitle = document.createElement("div");
-    activeTitle.className = "session-group-title";
+    activeTitle.className = "service-group-title";
     activeTitle.innerHTML = "✅ 연결된 서비스";
     activeGroup.appendChild(activeTitle);
-    didSessions.forEach((session) => activeGroup.appendChild(createSessionCard(session)));
-    sessionsPanel.appendChild(activeGroup);
+    didActiveServices.forEach((activeService) => activeGroup.appendChild(createActiveServiceCard(activeService)));
+    activeServicesPanel.appendChild(activeGroup);
   }
 
-  if (didApproved.length === 0 && didSessions.length === 0) {
+  if (didApproved.length === 0 && didActiveServices.length === 0) {
     const emptyMsg = document.createElement("div");
     emptyMsg.className = "empty-state";
     emptyMsg.style.padding = "20px";
@@ -620,10 +644,10 @@ function createDidCard(wallet) {
       <div class="empty-state-text">아직 연결된 서비스가 없어요</div>
       <div class="empty-state-hint">새로운 요청이 오면 여기에 표시됩니다</div>
     `;
-    sessionsPanel.appendChild(emptyMsg);
+    activeServicesPanel.appendChild(emptyMsg);
   }
 
-  wrapper.appendChild(sessionsPanel);
+  wrapper.appendChild(activeServicesPanel);
 
   header.addEventListener("click", () => {
     if (expandedDids.has(wallet.did)) expandedDids.delete(wallet.did);
@@ -695,6 +719,10 @@ async function createChallengeCard(challenge) {
   const availableDids = Array.isArray(challenge.available_dids) ? challenge.available_dids : [];
   const draft = await getChallengeDraft(challenge);
 
+  // 기존 활성 서비스의 승인된 claims 조회 (새 claims 감지용)
+  const existingApprovedClaims = await getExistingApprovedClaims(challenge.service_id, draft.did);
+  const newClaims = requestedClaims.filter((c) => !existingApprovedClaims.includes(c));
+
   // DID 선택
   const didLabel = document.createElement("div");
   didLabel.className = "claims-label";
@@ -719,8 +747,12 @@ async function createChallengeCard(challenge) {
   // Claims 선택
   const claimLabel = document.createElement("div");
   claimLabel.className = "claims-label";
-  claimLabel.textContent = "공유할 정보";
   claimLabel.style.marginTop = "12px";
+  if (newClaims.length > 0 && existingApprovedClaims.length > 0) {
+    claimLabel.innerHTML = `공유할 정보 <span class="new-claims-badge">+${newClaims.length} 새 항목</span>`;
+  } else {
+    claimLabel.textContent = "공유할 정보";
+  }
   wrapper.appendChild(claimLabel);
 
   const claimList = document.createElement("div");
@@ -734,21 +766,27 @@ async function createChallengeCard(challenge) {
 
   requestedClaims.forEach((claim) => {
     const labelText = getClaimLabel(claim);
+    const isNew = newClaims.includes(claim);
 
     const row = document.createElement("label");
-    row.className = "claim-row";
+    row.className = isNew ? "claim-row new-claim" : "claim-row";
 
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.value = claim;
-    checkbox.checked = draft.claims.includes(claim);
+    // 새 claim은 기본 체크 해제, 기존 claim은 draft에 따라
+    checkbox.checked = isNew ? false : draft.claims.includes(claim);
     checkbox.addEventListener("change", () => {
       const selected = Array.from(claimList.querySelectorAll("input:checked")).map((el) => el.value);
       challengeDrafts.set(challenge.challenge_id, { did: didSelect.value, claims: selected });
     });
 
     const text = document.createElement("span");
-    text.innerHTML = `${labelText} <span class="field-key">${claim}</span>`;
+    if (isNew) {
+      text.innerHTML = `<span class="new-badge">NEW</span> ${labelText} <span class="field-key">${claim}</span>`;
+    } else {
+      text.innerHTML = `${labelText} <span class="field-key">${claim}</span>`;
+    }
 
     row.appendChild(checkbox);
     row.appendChild(text);
@@ -790,7 +828,7 @@ async function createChallengeCard(challenge) {
       });
       challengeDrafts.delete(challenge.challenge_id);
       await loadChallenges();
-      await loadSessionsData();
+      await loadActiveServicesData();
       await loadApprovedData();
       renderDids();
       clearStatus();
@@ -860,7 +898,7 @@ async function addDid() {
   try {
     await window.miid.createWallet({ name: "user" });
     await loadWalletsData();
-    await loadSessionsData();
+    await loadActiveServicesData();
     await loadApprovedData();
     renderDids();
     await loadChallenges();
@@ -875,7 +913,7 @@ async function addDid() {
 async function refreshAll() {
   await loadProfileFields();
   await loadWalletsData();
-  await loadSessionsData();
+  await loadActiveServicesData();
   await loadApprovedData();
   renderDids();
   await loadChallenges();

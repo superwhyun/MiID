@@ -317,24 +317,29 @@ function createWalletApp() {
 
   app.post("/v1/wallets/consents", (req, res) => {
     const { did, service_id, scopes } = req.body || {};
-    if (!did || !service_id || !Array.isArray(scopes) || scopes.length === 0) {
+    if (!did || !service_id || !Array.isArray(scopes)) {
       return res.status(400).json({ error: "invalid_request" });
     }
+
     const store = readStore();
-    const wallet = store.wallets.find((w) => w.did === did);
-    if (!wallet) {
-      return res.status(404).json({ error: "wallet_not_found" });
+    let consent = store.consents.find((c) => c.did === did && c.service_id === service_id);
+
+    if (consent) {
+      consent.scopes = [...new Set([...(consent.scopes || []), ...scopes])];
+      consent.updated_at = nowIso();
+    } else {
+      consent = {
+        id: crypto.randomUUID(),
+        did,
+        service_id,
+        scopes: [...new Set(scopes)],
+        created_at: nowIso()
+      };
+      store.consents.push(consent);
     }
-    const consent = {
-      id: crypto.randomUUID(),
-      did,
-      service_id,
-      scopes: [...new Set(scopes)],
-      created_at: nowIso()
-    };
-    store.consents.push(consent);
     writeStore(store);
-    return res.status(201).json(consent);
+    dlog(`consent saved did=${did} service_id=${service_id} scopes=${consent.scopes.length}`);
+    return res.json({ ok: true, consent });
   });
 
   app.delete("/v1/wallets/by-did/:did", (req, res) => {
