@@ -2,7 +2,9 @@ const express = require("express");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const Database = require("better-sqlite3");
 const { EventSource } = require("eventsource");
+const { createClient } = require("redis");
 
 const PORT = Number(process.env.PORT || 15000);
 const GATEWAY_URL = process.env.GATEWAY_URL || "http://localhost:14000";
@@ -18,10 +20,13 @@ const AUTO_FINALIZE = process.env.SERVICE_AUTO_FINALIZE !== "0";
 const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
 const DATA_DIR = path.join(__dirname, "..", "..", "data");
 const CONFIGS_FILE = path.join(DATA_DIR, "service-configs.json");
+const SERVICE_DB_FILE = path.join(DATA_DIR, "service-backend.db");
+const REDIS_URL = process.env.REDIS_URL || "redis://127.0.0.1:6379";
+const REDIS_PREFIX = process.env.REDIS_PREFIX || "miid:service-backend";
+const CHALLENGE_TTL_SECONDS = Number(process.env.CHALLENGE_TTL_SECONDS || 600);
+const SESSION_TTL_SECONDS = Math.max(60, Math.floor(SESSION_MAX_AGE_MS / 1000));
 
-let CURRENT_SERVICE_ID = process.env.SERVICE_ID || "service-test";
-let CURRENT_CLIENT_ID = process.env.CLIENT_ID || process.env.SERVICE_CLIENT_ID || "web-client";
-let DYNAMIC_REQUESTED_CLAIMS = (process.env.REQUESTED_CLAIMS || "name,email,nickname")
+const DYNAMIC_REQUESTED_CLAIMS = (process.env.REQUESTED_CLAIMS || "name,email,nickname")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
@@ -36,6 +41,9 @@ const serviceConfigs = new Map();
 
 const defaultServiceId = SERVICE_ID;
 // Initialized via loadConfigs()
+let configDb = null;
+let redisClient = null;
+let redisReady = false;
 
 const gatewaySessionEventSources = new Map(); // client_id -> EventSource
 
@@ -48,19 +56,22 @@ function ensureStore() {
 }
 
 function loadConfigs() {
-  ensureStore();
-  let configs = [];
-  try {
-    if (fs.existsSync(CONFIGS_FILE)) {
-      configs = JSON.parse(fs.readFileSync(CONFIGS_FILE, "utf8"));
-    }
-  } catch (err) {
-    dlog(`Failed to read configs file: ${err.message}`);
-  }
-
-  // Restore Map
-  configs.forEach((c) => {
-    serviceConfigs.set(c.service_id, c);
+  serviceConfigs.clear();
+  const rows = configDb.prepare(`
+    SELECT service_id, client_id, client_secret, redirect_uri, requested_claims, service_name, registered, service_version
+    FROM service_configs
+  `).all();
+  rows.forEach((row) => {
+    serviceConfigs.set(row.service_id, {
+      service_id: row.service_id,
+      client_id: row.client_id,
+      client_secret: row.client_secret,
+      redirect_uri: row.redirect_uri,
+      requested_claims: parseJsonArray(row.requested_claims),
+      service_name: row.service_name || row.service_id,
+      registered: Boolean(row.registered),
+      service_version: Number.isInteger(row.service_version) ? row.service_version : 1
+    });
   });
 
   // Ensure default service is there
@@ -72,7 +83,8 @@ function loadConfigs() {
       redirect_uri: REDIRECT_URI,
       requested_claims: DYNAMIC_REQUESTED_CLAIMS,
       service_name: "Default Service",
-      registered: true
+      registered: true,
+      service_version: 1
     };
     serviceConfigs.set(defaultServiceId, defaultCfg);
     saveConfigs();
@@ -80,13 +92,29 @@ function loadConfigs() {
 }
 
 function saveConfigs() {
-  ensureStore();
-  const list = Array.from(serviceConfigs.values());
-  try {
-    fs.writeFileSync(CONFIGS_FILE, JSON.stringify(list, null, 2));
-  } catch (err) {
-    dlog(`Failed to save configs: ${err.message}`);
-  }
+  if (!configDb) return;
+  const replaceAll = configDb.transaction((list) => {
+    configDb.prepare("DELETE FROM service_configs").run();
+    const stmt = configDb.prepare(`
+      INSERT INTO service_configs (
+        service_id, client_id, client_secret, redirect_uri, requested_claims, service_name, registered, service_version, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    list.forEach((config) => {
+      stmt.run(
+        config.service_id,
+        config.client_id,
+        config.client_secret,
+        config.redirect_uri,
+        JSON.stringify(config.requested_claims || []),
+        config.service_name || config.service_id,
+        config.registered ? 1 : 0,
+        Number.isInteger(config.service_version) ? config.service_version : 1,
+        nowIso()
+      );
+    });
+  });
+  replaceAll(Array.from(serviceConfigs.values()));
 }
 
 function dlog(message) {
@@ -103,6 +131,100 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function parseJsonArray(value) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_err) {
+    return [];
+  }
+}
+
+function redisKey(suffix) {
+  return `${REDIS_PREFIX}:${suffix}`;
+}
+
+async function restoreRuntimeStateFromRedis() {
+  if (!redisReady || !redisClient) return;
+  try {
+    const sessionKeys = await redisClient.keys(redisKey("session:*"));
+    for (const key of sessionKeys) {
+      const payload = await redisClient.get(key);
+      if (!payload) continue;
+      const session = JSON.parse(payload);
+      if (!session?.sid || !session?.service_id) continue;
+      if (new Date(session.expiresAt) < new Date()) continue;
+      sessions.set(session.sid, session);
+      if (session.gatewaySessionId) {
+        gatewaySessionToLocalSid.set(session.gatewaySessionId, session.sid);
+      }
+    }
+
+    const challengeKeys = await redisClient.keys(redisKey("challenge:*"));
+    for (const key of challengeKeys) {
+      const payload = await redisClient.get(key);
+      if (!payload) continue;
+      const state = JSON.parse(payload);
+      if (!state?.challenge_id) continue;
+      challengeStates.set(state.challenge_id, state);
+    }
+    dlog(`restored runtime state from redis sessions=${sessions.size} challenges=${challengeStates.size}`);
+  } catch (err) {
+    dlog(`redis restore failed: ${err.message}`);
+  }
+}
+
+async function initRedis() {
+  redisClient = createClient({
+    url: REDIS_URL,
+    socket: {
+      connectTimeout: 1000,
+      reconnectStrategy: () => false
+    },
+    disableOfflineQueue: true
+  });
+  redisClient.on("error", (err) => {
+    dlog(`redis error: ${err.message}`);
+  });
+  try {
+    await redisClient.connect();
+    redisReady = true;
+    dlog(`redis connected url=${REDIS_URL}`);
+    await restoreRuntimeStateFromRedis();
+  } catch (err) {
+    redisReady = false;
+    dlog(`redis unavailable, running in-memory only: ${err.message}`);
+  }
+}
+
+function persistSession(session) {
+  if (!redisReady || !redisClient) return;
+  const tasks = [
+    redisClient.setEx(redisKey(`session:${session.sid}`), SESSION_TTL_SECONDS, JSON.stringify(session))
+  ];
+  if (session.gatewaySessionId) {
+    tasks.push(redisClient.setEx(redisKey(`gateway-session:${session.gatewaySessionId}`), SESSION_TTL_SECONDS, session.sid));
+  }
+  Promise.all(tasks).catch((err) => dlog(`persistSession failed sid=${session.sid}: ${err.message}`));
+}
+
+function deleteSessionState(sid, gatewaySessionId) {
+  if (!redisReady || !redisClient) return;
+  const keys = [redisKey(`session:${sid}`)];
+  if (gatewaySessionId) {
+    keys.push(redisKey(`gateway-session:${gatewaySessionId}`));
+  }
+  redisClient.del(keys).catch((err) => dlog(`deleteSessionState failed sid=${sid}: ${err.message}`));
+}
+
+function persistChallengeState(challengeId, state) {
+  if (!redisReady || !redisClient) return;
+  redisClient
+    .setEx(redisKey(`challenge:${challengeId}`), CHALLENGE_TTL_SECONDS, JSON.stringify(state))
+    .catch((err) => dlog(`persistChallengeState failed challenge=${challengeId}: ${err.message}`));
+}
+
 function createSession(serviceId, userData) {
   const sid = generateSessionId();
   const session = {
@@ -116,6 +238,7 @@ function createSession(serviceId, userData) {
   if (session.gatewaySessionId) {
     gatewaySessionToLocalSid.set(session.gatewaySessionId, sid);
   }
+  persistSession(session);
   return session;
 }
 
@@ -141,6 +264,59 @@ function deleteSession(sid) {
     gatewaySessionToLocalSid.delete(current.gatewaySessionId);
   }
   sessions.delete(sid);
+  deleteSessionState(sid, current?.gatewaySessionId);
+}
+
+function initConfigDb() {
+  ensureStore();
+  configDb = new Database(SERVICE_DB_FILE);
+  configDb.exec(`
+    CREATE TABLE IF NOT EXISTS service_configs (
+      service_id TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL,
+      client_secret TEXT NOT NULL,
+      redirect_uri TEXT NOT NULL,
+      requested_claims TEXT NOT NULL,
+      service_name TEXT,
+      registered INTEGER NOT NULL DEFAULT 0,
+      service_version INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL
+    );
+  `);
+
+  const columns = configDb.prepare("PRAGMA table_info(service_configs)").all();
+  const hasServiceVersion = columns.some((col) => col.name === "service_version");
+  if (!hasServiceVersion) {
+    configDb.exec("ALTER TABLE service_configs ADD COLUMN service_version INTEGER NOT NULL DEFAULT 1");
+  }
+
+  const countRow = configDb.prepare("SELECT COUNT(*) AS count FROM service_configs").get();
+  if (countRow.count === 0 && fs.existsSync(CONFIGS_FILE)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(CONFIGS_FILE, "utf8"));
+      if (Array.isArray(raw) && raw.length > 0) {
+        raw.forEach((config) => {
+          configDb.prepare(`
+            INSERT OR REPLACE INTO service_configs (
+              service_id, client_id, client_secret, redirect_uri, requested_claims, service_name, registered, service_version, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            config.service_id,
+            config.client_id,
+            config.client_secret,
+            config.redirect_uri,
+            JSON.stringify(config.requested_claims || []),
+            config.service_name || config.service_id,
+            config.registered ? 1 : 0,
+            Number.isInteger(config.service_version) ? config.service_version : 1,
+            nowIso()
+          );
+        });
+      }
+    } catch (err) {
+      dlog(`failed to migrate service-configs.json: ${err.message}`);
+    }
+  }
 }
 
 function startGatewaySessionEventStream(clientId) {
@@ -253,6 +429,7 @@ function setChallengeState(challengeId, patch) {
   const current = challengeStates.get(challengeId) || { challenge_id: challengeId };
   const next = { ...current, ...patch, updated_at: nowIso() };
   challengeStates.set(challengeId, next);
+  persistChallengeState(challengeId, next);
   return next;
 }
 
@@ -267,7 +444,13 @@ async function postJson(url, body, serviceConfig, extraHeaders = {}) {
     },
     body: JSON.stringify(body)
   });
-  const data = await response.json().catch(() => ({ error: "invalid_json_response" }));
+  const raw = await response.text();
+  let data;
+  try {
+    data = raw ? JSON.parse(raw) : {};
+  } catch (_err) {
+    data = { error: "invalid_json_response", raw: raw ? raw.slice(0, 300) : "" };
+  }
   if (!response.ok) {
     throw new Error(`${url} ${response.status} ${JSON.stringify(data)}`);
   }
@@ -276,7 +459,13 @@ async function postJson(url, body, serviceConfig, extraHeaders = {}) {
 
 async function getJson(url, headers = {}) {
   const response = await fetch(url, { headers });
-  const data = await response.json().catch(() => ({ error: "invalid_json_response" }));
+  const raw = await response.text();
+  let data;
+  try {
+    data = raw ? JSON.parse(raw) : {};
+  } catch (_err) {
+    data = { error: "invalid_json_response", raw: raw ? raw.slice(0, 300) : "" };
+  }
   if (!response.ok) {
     throw new Error(`${url} ${response.status} ${JSON.stringify(data)}`);
   }
@@ -474,6 +663,7 @@ app.post("/service/save", (req, res) => {
 
   const claims = requested_fields.split(",").map(s => s.trim()).filter(Boolean);
   const redirectHost = process.env.REDIRECT_HOST || "service-test.local";
+  const previous = serviceConfigs.get(service_id);
   const config = {
     service_id,
     client_id: service_id, // simple 1:1 for now
@@ -481,7 +671,8 @@ app.post("/service/save", (req, res) => {
     redirect_uri: `https://${service_id}.${redirectHost.split('.').slice(1).join('.')}/callback`,
     requested_claims: claims,
     service_name: service_name || service_id,
-    registered: false
+    registered: false,
+    service_version: Number.isInteger(previous?.service_version) ? previous.service_version : 1
   };
 
   // Special case for default-like behavior
@@ -507,14 +698,18 @@ app.post("/service/:id/register", async (req, res) => {
     // or use the config itself if it's the first one.
     const authConfig = Array.from(serviceConfigs.values()).find(s => s.registered) || config;
 
-    await postJson(`${GATEWAY_URL}/v1/services`, {
+    const registered = await postJson(`${GATEWAY_URL}/v1/services`, {
       client_id: config.client_id,
       service_id: config.service_id,
       client_secret: config.client_secret,
-      redirect_uris: [config.redirect_uri]
+      redirect_uris: [config.redirect_uri],
+      requested_claims: config.requested_claims,
+      default_scopes: ["profile", "email"],
+      risk_action: null
     }, authConfig);
 
     config.registered = true;
+    config.service_version = Number(registered?.service?.service_version || config.service_version || 1);
     serviceConfigs.set(serviceId, config);
     saveConfigs();
 
@@ -525,6 +720,51 @@ app.post("/service/:id/register", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: "registration_failed", message: err.message });
   }
+});
+
+app.delete("/service/:id", (req, res) => {
+  const serviceId = req.params.id;
+  const config = serviceConfigs.get(serviceId);
+  if (!config) {
+    return res.status(404).json({ error: "service_not_found" });
+  }
+  fetch(`${GATEWAY_URL}/v1/services/${encodeURIComponent(config.client_id)}`, {
+    method: "DELETE",
+    headers: {
+      "X-Client-Id": config.client_id,
+      "X-Client-Secret": config.client_secret
+    }
+  })
+    .then(async (gatewayRes) => {
+      if (!gatewayRes.ok && gatewayRes.status !== 404) {
+        const gatewayErr = await gatewayRes.json().catch(() => ({}));
+        return res.status(502).json({
+          error: "gateway_service_delete_failed",
+          message: gatewayErr.error || "gateway_service_delete_failed"
+        });
+      }
+
+      const es = gatewaySessionEventSources.get(config.client_id);
+      if (es) {
+        es.close();
+        gatewaySessionEventSources.delete(config.client_id);
+      }
+
+      for (const [sid, session] of sessions.entries()) {
+        if (session.service_id === serviceId) {
+          deleteSession(sid);
+        }
+      }
+
+      serviceConfigs.delete(serviceId);
+      saveConfigs();
+
+      res.setHeader("Set-Cookie", `sid_${serviceId}=; HttpOnly; SameSite=Lax; Max-Age=0; Path=/`);
+      return res.json({ success: true, deleted_service_id: serviceId });
+    })
+    .catch((err) => {
+      return res.status(502).json({ error: "gateway_unavailable", message: err.message });
+    });
 });
 
 app.post("/auth/start", async (req, res) => {
@@ -560,6 +800,7 @@ app.post("/auth/start", async (req, res) => {
       redirect_uri: config.redirect_uri,
       scopes: requestedScopes,
       requested_claims: config.requested_claims,
+      service_version: Number(config.service_version || 1),
       did_hint: didHint,
       require_user_approval: true
     }, config, {
@@ -573,6 +814,7 @@ app.post("/auth/start", async (req, res) => {
       nonce: challenge.nonce,
       expires_at: challenge.expires_at,
       service_id: config.service_id,
+      service_version: Number(challenge.service_version || config.service_version || 1),
       authorization_code: challenge.authorization_code || null
     });
 
@@ -788,23 +1030,31 @@ app.post("/logout", (req, res) => {
   return res.json({ success: true, message: "Logged out all sessions" });
 });
 
-app.listen(PORT, () => {
-  console.log(`service-backend listening on http://localhost:${PORT}`);
-  console.log(`Gateway URL: ${GATEWAY_URL}`);
-  console.log(`Local wallet required: ${LOCAL_WALLET_REQUIRED ? "on" : "off"} (${LOCAL_WALLET_URL})`);
-  console.log(`Auto finalize: ${AUTO_FINALIZE ? "on" : "off"}`);
-  console.log(`Debug auth: ${DEBUG_AUTH ? "on" : "off"}`);
-});
+async function bootstrap() {
+  initConfigDb();
+  loadConfigs();
+  await initRedis();
 
-// Initialize
-loadConfigs();
-startGatewaySessionEventStream(CLIENT_ID);
+  app.listen(PORT, () => {
+    console.log(`service-backend listening on http://localhost:${PORT}`);
+    console.log(`Gateway URL: ${GATEWAY_URL}`);
+    console.log(`Redis URL: ${REDIS_URL} (${redisReady ? "connected" : "in-memory fallback"})`);
+    console.log(`Local wallet required: ${LOCAL_WALLET_REQUIRED ? "on" : "off"} (${LOCAL_WALLET_URL})`);
+    console.log(`Auto finalize: ${AUTO_FINALIZE ? "on" : "off"}`);
+    console.log(`Debug auth: ${DEBUG_AUTH ? "on" : "off"}`);
+  });
 
-// Start background connection for any other pre-registered clients
-for (const config of serviceConfigs.values()) {
-  if (config.registered && config.service_id !== defaultServiceId) {
-    startGatewaySessionEventStream(config.client_id);
+  startGatewaySessionEventStream(CLIENT_ID);
+  for (const config of serviceConfigs.values()) {
+    if (config.registered && config.service_id !== defaultServiceId) {
+      startGatewaySessionEventStream(config.client_id);
+    }
   }
 }
+
+bootstrap().catch((err) => {
+  console.error(`[service-backend] bootstrap failed: ${err.message}`);
+  process.exit(1);
+});
 
 module.exports = { app };
