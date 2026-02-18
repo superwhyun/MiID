@@ -3,13 +3,19 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
+// DB modules
+const { getDb } = require("./db");
+const { initializeSchema } = require("./db/schema");
+const { startCleanupScheduler } = require("./db/cleanup");
+const store = require("./db/store");
+
 const PORT = process.env.GATEWAY_PORT || 14000;
 const DATA_DIR = path.join(__dirname, "..", "..", "data");
-const DATA_FILE = path.join(DATA_DIR, "gateway.json");
 const SERVICES_FILE = path.join(DATA_DIR, "services.json");
 const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
 const REQUIRE_WALLET_APPROVAL_FOR_REUSE = process.env.REQUIRE_WALLET_APPROVAL_FOR_REUSE !== "0";
 const REQUIRE_LOCAL_WALLET_READY = process.env.LOCAL_WALLET_REQUIRED !== "0";
+const WALLET_AUTHORITATIVE_MODE = process.env.WALLET_AUTHORITATIVE_MODE !== "0";
 
 let SERVICE_REGISTRY = new Map();
 
@@ -19,8 +25,17 @@ function dlog(message) {
   }
 }
 
+function ensureDataDir() {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(SERVICES_FILE)) {
+    fs.writeFileSync(SERVICES_FILE, JSON.stringify([], null, 2));
+  }
+}
+
 function loadServiceRegistry() {
-  ensureStore();
+  ensureDataDir();
   const defaultClientId = process.env.SERVICE_CLIENT_ID || "web-client";
   const defaultServiceId = process.env.SERVICE_ID || "service-test";
   const defaultClientSecret = process.env.SERVICE_CLIENT_SECRET || "dev-service-secret";
@@ -36,22 +51,49 @@ function loadServiceRegistry() {
 
   const registry = new Map();
 
-  // Add default service if not already in file
   if (!services.find(s => s.client_id === defaultClientId)) {
+    const defaultPolicy = {
+      default_scopes: ["profile", "email"],
+      requested_claims: normalizeRequestedClaims((process.env.REQUESTED_CLAIMS || "name,email,nickname").split(",")),
+      risk_action: null
+    };
     registry.set(defaultClientId, {
       client_id: defaultClientId,
       service_id: defaultServiceId,
       client_secret: defaultClientSecret,
-      redirect_uris: [defaultRedirectUri]
+      redirect_uris: [defaultRedirectUri],
+      default_scopes: defaultPolicy.default_scopes,
+      requested_claims: defaultPolicy.requested_claims,
+      risk_action: defaultPolicy.risk_action,
+      service_version: 1,
+      policy_hash: buildServicePolicyHash(defaultPolicy)
     });
   }
 
-  // Add services from file
   services.forEach(s => {
-    registry.set(s.client_id, s);
+    const normalized = {
+      ...s,
+      default_scopes: normalizeScopes(s.default_scopes),
+      requested_claims: normalizeRequestedClaims(s.requested_claims),
+      risk_action: s.risk_action || null
+    };
+    normalized.service_version = Number.isInteger(normalized.service_version) ? normalized.service_version : 1;
+    normalized.policy_hash = typeof normalized.policy_hash === "string" && normalized.policy_hash.length > 0
+      ? normalized.policy_hash
+      : buildServicePolicyHash(normalized);
+    registry.set(normalized.client_id, normalized);
   });
 
   SERVICE_REGISTRY = registry;
+}
+
+function readServices() {
+  ensureDataDir();
+  return JSON.parse(fs.readFileSync(SERVICES_FILE, "utf8"));
+}
+
+function writeServices(services) {
+  fs.writeFileSync(SERVICES_FILE, JSON.stringify(services, null, 2));
 }
 
 function authenticateServiceClient(req, res) {
@@ -62,7 +104,6 @@ function authenticateServiceClient(req, res) {
     return null;
   }
 
-  // Refresh registry from disk to pick up dynamic changes
   loadServiceRegistry();
 
   const service = SERVICE_REGISTRY.get(clientId);
@@ -73,70 +114,8 @@ function authenticateServiceClient(req, res) {
   return service;
 }
 
-function ensureStore() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-  if (!fs.existsSync(DATA_FILE)) {
-    const initial = {
-      challenges: [],
-      authCodes: [],
-      subjects: [],
-      consents: [],
-      sessions: []
-    };
-    fs.writeFileSync(DATA_FILE, JSON.stringify(initial, null, 2));
-  }
-  if (!fs.existsSync(SERVICES_FILE)) {
-    fs.writeFileSync(SERVICES_FILE, JSON.stringify([], null, 2));
-  }
-}
-
-function readServices() {
-  ensureStore();
-  return JSON.parse(fs.readFileSync(SERVICES_FILE, "utf8"));
-}
-
-function writeServices(services) {
-  fs.writeFileSync(SERVICES_FILE, JSON.stringify(services, null, 2));
-}
-
-function readStore() {
-  ensureStore();
-  return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-}
-
-function writeStore(data) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-}
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
-function addMinutes(date, minutes) {
-  const d = new Date(date);
-  d.setMinutes(d.getMinutes() + minutes);
-  return d.toISOString();
-}
-
-function addDays(date, days) {
-  const d = new Date(date);
-  d.setDate(d.getDate() + days);
-  return d.toISOString();
-}
-
-function randomToken(bytes = 24) {
-  return crypto.randomBytes(bytes).toString("base64url");
-}
-
 function toPayloadString(payload) {
   return JSON.stringify(payload);
-}
-
-function hashScopes(scopes) {
-  const normalized = [...new Set(scopes)].sort().join(" ");
-  return crypto.createHash("sha256").update(normalized).digest("hex");
 }
 
 function hasAllScopes(consentScopes, requestedScopes) {
@@ -151,6 +130,16 @@ function parseScopeText(scopeText) {
   return scopeText.split(" ").map((s) => s.trim()).filter(Boolean);
 }
 
+function normalizeScopes(scopes) {
+  if (!Array.isArray(scopes) || scopes.length === 0) {
+    return ["profile", "email"];
+  }
+  return [...new Set(scopes)]
+    .filter((scope) => typeof scope === "string")
+    .map((scope) => scope.trim())
+    .filter(Boolean);
+}
+
 function normalizeRequestedClaims(requestedClaims) {
   if (!Array.isArray(requestedClaims) || requestedClaims.length === 0) {
     return [];
@@ -161,6 +150,29 @@ function normalizeRequestedClaims(requestedClaims) {
     .filter((claim) => claim.length > 0);
 }
 
+function buildServicePolicyHash(policy = {}) {
+  return buildPolicyHash(
+    normalizeScopes(policy.default_scopes),
+    normalizeRequestedClaims(policy.requested_claims),
+    policy.risk_action || null
+  );
+}
+
+function buildPolicyHash(scopes = [], requestedClaims = [], riskAction = null) {
+  const normalizedScopes = [...new Set(Array.isArray(scopes) ? scopes : [])].sort();
+  const normalizedClaims = normalizeRequestedClaims(requestedClaims).sort();
+  const payload = JSON.stringify({
+    scopes: normalizedScopes,
+    requested_claims: normalizedClaims,
+    risk_action: riskAction || null
+  });
+  return crypto.createHash("sha256").update(payload).digest("hex");
+}
+
+function getChallengePolicyHash(challenge) {
+  return buildPolicyHash(challenge?.scopes, challenge?.requested_claims, challenge?.risk_action);
+}
+
 function filterProfileClaims(profileClaims, approvedClaims) {
   const approvedArr = Array.isArray(approvedClaims) ? approvedClaims : [];
   const filtered = {};
@@ -168,17 +180,6 @@ function filterProfileClaims(profileClaims, approvedClaims) {
     filtered[claim] = profileClaims[claim] !== undefined ? profileClaims[claim] : null;
   });
   return filtered;
-}
-
-function findOrCreateSubject(store, did, serviceId) {
-  let row = store.subjects.find((s) => s.did === did && s.service_id === serviceId);
-  if (row) {
-    return row.subject_id;
-  }
-  const subjectId = `sub_${crypto.randomUUID().replace(/-/g, "")}`;
-  row = { id: crypto.randomUUID(), did, service_id: serviceId, subject_id: subjectId, created_at: nowIso() };
-  store.subjects.push(row);
-  return subjectId;
 }
 
 function toSafeText(value) {
@@ -193,7 +194,6 @@ function normalizeWalletProfile(wallet) {
   if (!wallet || typeof wallet !== "object") {
     return {};
   }
-  // Use unified profile if available
   if (wallet.profile && typeof wallet.profile === "object") {
     const normalized = {};
     Object.entries(wallet.profile).forEach(([key, data]) => {
@@ -205,7 +205,6 @@ function normalizeWalletProfile(wallet) {
     });
     return normalized;
   }
-  // Fallback for old wallet records
   return {
     name: toSafeText(wallet.name),
     email: toSafeText(wallet.email),
@@ -292,11 +291,9 @@ async function resolveDidDocument({ did, walletUrl }) {
   throw new Error(`unsupported_did_method:${did.split(":")[1] || "unknown"}`);
 }
 
-function issueAuthCodeFromChallenge(store, challenge, did, walletProfile = null, approvedClaims = null, walletUrl = null) {
-  const subjectId = findOrCreateSubject(store, did, challenge.service_id);
-  const activeConsents = store.consents
-    .filter((c) => c.service_id === challenge.service_id && c.subject_id === subjectId && c.status === "active")
-    .sort((a, b) => b.version - a.version);
+function issueAuthCodeFromChallenge(challenge, did, walletProfile = null, approvedClaims = null, walletUrl = null) {
+  const subjectId = store.findOrCreateSubject(did, challenge.service_id);
+  const activeConsents = store.findActiveConsents(challenge.service_id, subjectId);
   const latestConsent = activeConsents[0];
   const missing = latestConsent
     ? challenge.scopes.filter((s) => !latestConsent.scopes.includes(s))
@@ -304,7 +301,7 @@ function issueAuthCodeFromChallenge(store, challenge, did, walletProfile = null,
 
   const authCode = {
     id: crypto.randomUUID(),
-    code: `ac_${randomToken(16)}`,
+    code: `ac_${store.randomToken(16)}`,
     challenge_id: challenge.id,
     service_id: challenge.service_id,
     client_id: challenge.client_id,
@@ -319,42 +316,19 @@ function issueAuthCodeFromChallenge(store, challenge, did, walletProfile = null,
     approved_claims: approvedClaims || challenge.requested_claims || [],
     profile_claims: walletProfile,
     wallet_url: walletUrl || null,
-    expires_at: addMinutes(nowIso(), 2),
-    used_at: null,
-    created_at: nowIso()
+    expires_at: store.addMinutes(store.nowIso(), 2),
+    created_at: store.nowIso()
   };
 
-  challenge.used_at = nowIso();
-  challenge.status = "verified";
-  challenge.verified_at = nowIso();
-  challenge.authorization_code = authCode.code;
-  store.authCodes.push(authCode);
+  store.updateChallengeStatus(challenge.id, {
+    used_at: store.nowIso(),
+    status: "verified",
+    verified_at: store.nowIso(),
+    authorization_code: authCode.code
+  });
 
+  store.insertAuthCode(authCode);
   return authCode;
-}
-
-function upsertConsentForApproval(store, serviceId, subjectId, scopes, purpose = "wallet_approval") {
-  const normalizedScopes = [...new Set(scopes)];
-  const versions = store.consents
-    .filter((c) => c.service_id === serviceId && c.subject_id === subjectId)
-    .map((c) => c.version);
-  const version = (versions.length ? Math.max(...versions) : 0) + 1;
-
-  const consent = {
-    id: crypto.randomUUID(),
-    service_id: serviceId,
-    subject_id: subjectId,
-    scopes: normalizedScopes,
-    scope_hash: hashScopes(normalizedScopes),
-    purpose,
-    version,
-    status: "active",
-    granted_at: nowIso(),
-    expires_at: null,
-    revoked_at: null
-  };
-  store.consents.push(consent);
-  return consent;
 }
 
 function requireBearer(req, res, next) {
@@ -394,7 +368,7 @@ function pushWalletEvent(did, type, payload) {
   if (!current) {
     return;
   }
-  const body = JSON.stringify({ type, payload, at: nowIso() });
+  const body = JSON.stringify({ type, payload, at: store.nowIso() });
   current.forEach((res) => {
     res.write(`event: ${type}\n`);
     res.write(`data: ${body}\n\n`);
@@ -425,7 +399,7 @@ function pushChallengeEvent(challengeId, type, payload) {
     return;
   }
   dlog(`pushChallengeEvent challenge=${challengeId} type=${type}`);
-  const body = JSON.stringify({ type, payload, at: nowIso() });
+  const body = JSON.stringify({ type, payload, at: store.nowIso() });
   current.forEach((res) => {
     res.write(`event: ${type}\n`);
     res.write(`data: ${body}\n\n`);
@@ -433,7 +407,7 @@ function pushChallengeEvent(challengeId, type, payload) {
 }
 
 function broadcastWalletEvent(type, payload) {
-  const body = JSON.stringify({ type, payload, at: nowIso() });
+  const body = JSON.stringify({ type, payload, at: store.nowIso() });
   walletStreams.forEach((clients) => {
     clients.forEach((res) => {
       res.write(`event: ${type}\n`);
@@ -464,7 +438,7 @@ function pushServiceSessionEvent(serviceId, type, payload) {
   if (!current) {
     return;
   }
-  const body = JSON.stringify({ type, payload, at: nowIso() });
+  const body = JSON.stringify({ type, payload, at: store.nowIso() });
   current.forEach((res) => {
     res.write(`event: ${type}\n`);
     res.write(`data: ${body}\n\n`);
@@ -472,7 +446,7 @@ function pushServiceSessionEvent(serviceId, type, payload) {
 }
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "gateway", now: nowIso() });
+  res.json({ ok: true, service: "gateway", now: store.nowIso() });
 });
 
 app.post("/v1/services", (req, res) => {
@@ -480,14 +454,45 @@ app.post("/v1/services", (req, res) => {
   if (!service) {
     return;
   }
-  const { client_id, service_id, client_secret, redirect_uris } = req.body || {};
+  const {
+    client_id,
+    service_id,
+    client_secret,
+    redirect_uris,
+    requested_claims,
+    default_scopes,
+    risk_action
+  } = req.body || {};
   if (!client_id || !service_id || !client_secret || !Array.isArray(redirect_uris)) {
     return res.status(400).json({ error: "invalid_request" });
   }
 
   const services = readServices();
   const existingIndex = services.findIndex((s) => s.client_id === client_id);
-  const newService = { client_id, service_id, client_secret, redirect_uris, updated_at: nowIso() };
+  const existingService = existingIndex >= 0 ? services[existingIndex] : null;
+  const nextPolicy = {
+    default_scopes: normalizeScopes(default_scopes || existingService?.default_scopes),
+    requested_claims: normalizeRequestedClaims(requested_claims || existingService?.requested_claims),
+    risk_action: risk_action || existingService?.risk_action || null
+  };
+  const nextPolicyHash = buildServicePolicyHash(nextPolicy);
+  const previousVersion = Number.isInteger(existingService?.service_version) ? existingService.service_version : 1;
+  const previousPolicyHash = typeof existingService?.policy_hash === "string" ? existingService.policy_hash : null;
+  const serviceVersion = !existingService
+    ? 1
+    : (previousPolicyHash !== nextPolicyHash ? previousVersion + 1 : previousVersion);
+  const newService = {
+    client_id,
+    service_id,
+    client_secret,
+    redirect_uris,
+    default_scopes: nextPolicy.default_scopes,
+    requested_claims: nextPolicy.requested_claims,
+    risk_action: nextPolicy.risk_action,
+    service_version: serviceVersion,
+    policy_hash: nextPolicyHash,
+    updated_at: store.nowIso()
+  };
 
   if (existingIndex >= 0) {
     services[existingIndex] = newService;
@@ -497,8 +502,44 @@ app.post("/v1/services", (req, res) => {
 
   writeServices(services);
   loadServiceRegistry();
-  dlog(`service registered/updated: ${client_id}`);
+  dlog(`service registered/updated: ${client_id} version=${newService.service_version}`);
   res.json({ success: true, service: newService });
+});
+
+app.delete("/v1/services/:clientId", (req, res) => {
+  const service = authenticateServiceClient(req, res);
+  if (!service) {
+    return;
+  }
+
+  const clientId = req.params.clientId;
+  if (service.client_id !== clientId) {
+    return res.status(403).json({ error: "client_id_mismatch" });
+  }
+
+  const services = readServices();
+  const existingIndex = services.findIndex((s) => s.client_id === clientId);
+  if (existingIndex < 0) {
+    return res.status(404).json({ error: "service_not_found" });
+  }
+
+  const deleted = services[existingIndex];
+  services.splice(existingIndex, 1);
+
+  writeServices(services);
+  loadServiceRegistry();
+
+  const sessionSubscribers = serviceSessionStreams.get(deleted.service_id);
+  if (sessionSubscribers) {
+    sessionSubscribers.forEach((streamRes) => streamRes.end());
+    serviceSessionStreams.delete(deleted.service_id);
+  }
+
+  dlog(`service deleted: ${clientId}`);
+  return res.json({
+    success: true,
+    deleted: { client_id: deleted.client_id, service_id: deleted.service_id }
+  });
 });
 
 app.get("/v1/wallet/events", (req, res) => {
@@ -512,7 +553,7 @@ app.get("/v1/wallet/events", (req, res) => {
   res.flushHeaders?.();
   dlog(`wallet events connected did=${did}`);
   res.write(`event: connected\n`);
-  res.write(`data: ${JSON.stringify({ did, at: nowIso() })}\n\n`);
+  res.write(`data: ${JSON.stringify({ did, at: store.nowIso() })}\n\n`);
   addWalletStream(did, res);
   const keepAlive = setInterval(() => {
     res.write(`event: ping\ndata: {}\n\n`);
@@ -534,8 +575,7 @@ app.get("/v1/service/events", (req, res) => {
     return res.status(400).json({ error: "challenge_id_required" });
   }
 
-  const store = readStore();
-  const challenge = store.challenges.find((c) => c.id === challengeId);
+  const challenge = store.findChallengeById(challengeId);
   if (!challenge) {
     return res.status(404).json({ error: "challenge_not_found" });
   }
@@ -549,7 +589,7 @@ app.get("/v1/service/events", (req, res) => {
   res.flushHeaders?.();
   dlog(`service events connected challenge_id=${challengeId} client_id=${service.client_id}`);
   res.write(`event: connected\n`);
-  res.write(`data: ${JSON.stringify({ challenge_id: challengeId, at: nowIso() })}\n\n`);
+  res.write(`data: ${JSON.stringify({ challenge_id: challengeId, at: store.nowIso() })}\n\n`);
 
   addChallengeStream(challengeId, res);
   const keepAlive = setInterval(() => {
@@ -576,7 +616,7 @@ app.get("/v1/service/session-events", (req, res) => {
   res.flushHeaders?.();
   dlog(`service session events connected service_id=${serviceId}`);
   res.write(`event: connected\n`);
-  res.write(`data: ${JSON.stringify({ service_id: serviceId, at: nowIso() })}\n\n`);
+  res.write(`data: ${JSON.stringify({ service_id: serviceId, at: store.nowIso() })}\n\n`);
   addServiceSessionStream(serviceId, res);
   const keepAlive = setInterval(() => {
     res.write(`event: ping\ndata: {}\n\n`);
@@ -608,7 +648,18 @@ app.post("/v1/auth/challenge", (req, res) => {
       });
     }
   }
-  const { service_id, client_id, redirect_uri, scopes, state, risk_action, did_hint, require_user_approval, requested_claims } = req.body || {};
+  const {
+    service_id,
+    client_id,
+    redirect_uri,
+    scopes,
+    state,
+    risk_action,
+    did_hint,
+    require_user_approval,
+    requested_claims,
+    service_version
+  } = req.body || {};
   if (!client_id || !redirect_uri || !Array.isArray(scopes) || scopes.length === 0) {
     return res.status(400).json({ error: "invalid_request" });
   }
@@ -621,6 +672,12 @@ app.post("/v1/auth/challenge", (req, res) => {
   if (!service.redirect_uris.includes(redirect_uri)) {
     return res.status(403).json({ error: "redirect_uri_not_allowed" });
   }
+  if (service_version !== undefined && Number(service_version) !== Number(service.service_version || 1)) {
+    return res.status(409).json({
+      error: "service_version_mismatch",
+      expected_service_version: Number(service.service_version || 1)
+    });
+  }
   if (did_hint && REQUIRE_LOCAL_WALLET_READY && !walletStreams.has(did_hint)) {
     return res.status(409).json({
       error: "wallet_local_unreachable",
@@ -628,38 +685,37 @@ app.post("/v1/auth/challenge", (req, res) => {
     });
   }
 
-  const store = readStore();
   const normalizedScopes = [...new Set(scopes)];
   const normalizedRequestedClaims = normalizeRequestedClaims(requested_claims);
   const challenge = {
     id: crypto.randomUUID(),
-    nonce: randomToken(18),
+    nonce: store.randomToken(18),
     service_id: service.service_id,
     client_id: service.client_id,
     redirect_uri,
     scopes: normalizedScopes,
     requested_claims: normalizedRequestedClaims,
+    service_version: Number(service.service_version || 1),
     state: state || null,
     risk_action: risk_action || null,
     did_hint: did_hint || null,
     require_user_approval: require_user_approval !== false,
     status: "pending",
-    verified_at: null,
-    denied_at: null,
-    authorization_code: null,
-    expires_at: addMinutes(nowIso(), 5),
-    used_at: null,
-    created_at: nowIso()
+    expires_at: store.addMinutes(store.nowIso(), 5),
+    created_at: store.nowIso()
   };
-  store.challenges.push(challenge);
+
+  store.insertChallenge(challenge);
   dlog(`challenge created id=${challenge.id} did_hint=${challenge.did_hint || "none"} service=${challenge.service_id}`);
-  writeStore(store);
+
   const eventPayload = {
     challenge_id: challenge.id,
     service_id: challenge.service_id,
     did_hint: challenge.did_hint,
     scopes: challenge.scopes,
+    service_version: challenge.service_version,
     requested_claims: challenge.requested_claims,
+    policy_hash: getChallengePolicyHash(challenge),
     expires_at: challenge.expires_at
   };
   if (challenge.did_hint) {
@@ -673,11 +729,19 @@ app.post("/v1/auth/challenge", (req, res) => {
     nonce: challenge.nonce,
     expires_at: challenge.expires_at,
     status: challenge.status,
-    requested_claims: challenge.requested_claims
+    service_version: challenge.service_version,
+    requested_claims: challenge.requested_claims,
+    policy_hash: getChallengePolicyHash(challenge)
   });
 });
 
 app.post("/v1/auth/reuse-session", (req, res) => {
+  if (WALLET_AUTHORITATIVE_MODE) {
+    return res.status(403).json({
+      error: "wallet_authoritative_mode_enabled",
+      message: "Session reuse shortcut is disabled. Route all login requests through wallet approval."
+    });
+  }
   const service = authenticateServiceClient(req, res);
   if (!service) {
     return;
@@ -693,15 +757,7 @@ app.post("/v1/auth/reuse-session", (req, res) => {
     return res.status(400).json({ error: "invalid_request" });
   }
 
-  const store = readStore();
-  const reusable = store.sessions.find(
-    (s) =>
-      s.service_id === service.service_id &&
-      s.did === did &&
-      !s.revoked_at &&
-      new Date(s.expires_at) > new Date() &&
-      hasAllScopes(parseScopeText(s.scope), scopes)
-  );
+  const reusable = store.findReusableSession(service.service_id, did, scopes);
   if (!reusable) {
     return res.status(404).json({ error: "no_reusable_session" });
   }
@@ -729,7 +785,7 @@ app.post("/v1/wallet/notify-reuse", (req, res) => {
     service_id: service.service_id,
     scopes: Array.isArray(scopes) ? scopes : [],
     reused: true,
-    at: nowIso()
+    at: store.nowIso()
   };
   pushWalletEvent(did, "login_reused", payload);
   dlog(`wallet notified reused login did=${did} service=${service.service_id}`);
@@ -743,8 +799,7 @@ app.post("/v1/auth/verify", async (req, res) => {
       return res.status(400).json({ error: "invalid_request" });
     }
 
-    const store = readStore();
-    const challenge = store.challenges.find((c) => c.id === challenge_id);
+    const challenge = store.findChallengeById(challenge_id);
     if (!challenge) {
       return res.status(404).json({ error: "challenge_not_found" });
     }
@@ -780,8 +835,7 @@ app.post("/v1/auth/verify", async (req, res) => {
 
     const approvedClaims = normalizeRequestedClaims(challenge.requested_claims);
     const filteredProfile = filterProfileClaims(walletProfile, approvedClaims);
-    const authCode = issueAuthCodeFromChallenge(store, challenge, did, filteredProfile, approvedClaims, wallet_url);
-    writeStore(store);
+    const authCode = issueAuthCodeFromChallenge(challenge, did, filteredProfile, approvedClaims, wallet_url);
 
     return res.json({
       authorization_code: authCode.code,
@@ -797,14 +851,14 @@ app.post("/v1/auth/verify", async (req, res) => {
 });
 
 app.get("/v1/auth/challenges/:challengeId/status", (req, res) => {
-  const store = readStore();
-  const challenge = store.challenges.find((c) => c.id === req.params.challengeId);
+  const challenge = store.findChallengeById(req.params.challengeId);
   if (!challenge) {
     return res.status(404).json({ error: "challenge_not_found" });
   }
+
   if (new Date(challenge.expires_at) < new Date() && challenge.status === "pending") {
+    store.updateChallengeStatus(challenge.id, { status: "expired" });
     challenge.status = "expired";
-    writeStore(store);
     pushChallengeEvent(challenge.id, "challenge_expired", { challenge_id: challenge.id });
     if (challenge.did_hint) {
       pushWalletEvent(challenge.did_hint, "challenge_expired", { challenge_id: challenge.id });
@@ -826,20 +880,21 @@ app.get("/v1/wallet/challenges", (req, res) => {
   if (!did) {
     return res.status(400).json({ error: "did_required" });
   }
-  const store = readStore();
-  const pending = store.challenges
-    .filter((c) => (c.did_hint === did || c.did_hint === null) && c.status === "pending" && new Date(c.expires_at) > new Date())
-    .map((c) => ({
-      challenge_id: c.id,
-      service_id: c.service_id,
-      client_id: c.client_id,
-      nonce: c.nonce,
-      scopes: c.scopes,
-      did_hint: c.did_hint || null,
-      requested_claims: Array.isArray(c.requested_claims) ? c.requested_claims : [],
-      risk_action: c.risk_action,
-      expires_at: c.expires_at
-    }));
+
+  const challenges = store.findPendingChallenges(did);
+  const pending = challenges.map((c) => ({
+    challenge_id: c.id,
+    service_id: c.service_id,
+    client_id: c.client_id,
+    nonce: c.nonce,
+    scopes: c.scopes,
+    service_version: Number(c.service_version || 1),
+    policy_hash: getChallengePolicyHash(c),
+    did_hint: c.did_hint || null,
+    requested_claims: Array.isArray(c.requested_claims) ? c.requested_claims : [],
+    risk_action: c.risk_action,
+    expires_at: c.expires_at
+  }));
   dlog(`wallet pending query did=${did} count=${pending.length}`);
   return res.json({ did, challenges: pending });
 });
@@ -849,22 +904,21 @@ app.get("/v1/wallet/sessions", (req, res) => {
   if (!did) {
     return res.status(400).json({ error: "did_required" });
   }
-  const store = readStore();
-  const sessions = store.sessions
-    .filter((s) => s.did === did && !s.revoked_at && new Date(s.expires_at) > new Date())
-    .map((s) => ({
-      session_id: s.id,
-      service_id: s.service_id,
-      subject_id: s.subject_id,
-      scope: s.scope,
-      requested_claims: Array.isArray(s.requested_claims) ? s.requested_claims : [],
-      approved_claims: s.approved_claims || [],
-      risk_level: s.risk_level,
-      expires_at: s.expires_at,
-      created_at: s.created_at
-    }));
-  dlog(`wallet sessions query did=${did} count=${sessions.length}`);
-  return res.json({ did, sessions });
+
+  const sessions = store.findSessionsByDid(did);
+  const result = sessions.map((s) => ({
+    session_id: s.id,
+    service_id: s.service_id,
+    subject_id: s.subject_id,
+    scope: s.scope,
+    requested_claims: Array.isArray(s.requested_claims) ? s.requested_claims : [],
+    approved_claims: s.approved_claims || [],
+    risk_level: s.risk_level,
+    expires_at: s.expires_at,
+    created_at: s.created_at
+  }));
+  dlog(`wallet sessions query did=${did} count=${result.length}`);
+  return res.json({ did, sessions: result });
 });
 
 app.get("/v1/wallet/approved", (req, res) => {
@@ -872,21 +926,20 @@ app.get("/v1/wallet/approved", (req, res) => {
   if (!did) {
     return res.status(400).json({ error: "did_required" });
   }
-  const store = readStore();
-  const approved = store.authCodes
-    .filter((c) => c.did === did && !c.used_at && new Date(c.expires_at) > new Date())
-    .map((c) => ({
-      authorization_code: c.code,
-      challenge_id: c.challenge_id,
-      service_id: c.service_id,
-      client_id: c.client_id,
-      redirect_uri: c.redirect_uri,
-      subject_id: c.subject_id,
-      scopes: c.scopes,
-      requested_claims: Array.isArray(c.requested_claims) ? c.requested_claims : [],
-      approved_claims: Array.isArray(c.approved_claims) ? c.approved_claims : [],
-      expires_at: c.expires_at
-    }));
+
+  const authCodes = store.findApprovedAuthCodes(did);
+  const approved = authCodes.map((c) => ({
+    authorization_code: c.code,
+    challenge_id: c.challenge_id,
+    service_id: c.service_id,
+    client_id: c.client_id,
+    redirect_uri: c.redirect_uri,
+    subject_id: c.subject_id,
+    scopes: c.scopes,
+    requested_claims: Array.isArray(c.requested_claims) ? c.requested_claims : [],
+    approved_claims: Array.isArray(c.approved_claims) ? c.approved_claims : [],
+    expires_at: c.expires_at
+  }));
   dlog(`wallet approved query did=${did} count=${approved.length}`);
   return res.json({ did, approved });
 });
@@ -897,8 +950,7 @@ app.delete("/v1/wallet/approved/:authCode", (req, res) => {
     return res.status(400).json({ error: "did_required" });
   }
 
-  const store = readStore();
-  const authCode = store.authCodes.find((c) => c.code === req.params.authCode);
+  const authCode = store.findAuthCodeByCode(req.params.authCode);
   if (!authCode) {
     return res.status(404).json({ error: "auth_code_not_found" });
   }
@@ -909,24 +961,26 @@ app.delete("/v1/wallet/approved/:authCode", (req, res) => {
     return res.status(409).json({ error: "already_exchanged" });
   }
 
-  const challenge = store.challenges.find((c) => c.id === authCode.challenge_id);
+  const challenge = store.findChallengeById(authCode.challenge_id);
   if (!challenge) {
     return res.status(404).json({ error: "challenge_not_found" });
   }
   if (new Date(challenge.expires_at) <= new Date()) {
-    challenge.status = "expired";
-    writeStore(store);
+    store.updateChallengeStatus(challenge.id, { status: "expired" });
     return res.status(409).json({ error: "challenge_expired_cannot_restore" });
   }
 
-  authCode.used_at = nowIso();
+  store.updateAuthCodeUsed(authCode.code, store.nowIso());
+
   if (challenge.status === "verified") {
-    challenge.status = "pending";
-    challenge.verified_at = null;
-    challenge.authorization_code = null;
-    challenge.used_at = null;
+    store.updateChallengeStatus(challenge.id, {
+      status: "pending",
+      verified_at: null,
+      authorization_code: null,
+      used_at: null
+    });
   }
-  writeStore(store);
+
   dlog(`approved cancelled did=${did} challenge=${challenge.id} auth_code=${authCode.code}`);
   pushWalletEvent(did, "approved_cancelled", {
     challenge_id: challenge.id,
@@ -937,7 +991,7 @@ app.delete("/v1/wallet/approved/:authCode", (req, res) => {
     challenge_id: challenge.id,
     authorization_code: authCode.code,
     status: "pending",
-    restored_at: nowIso()
+    restored_at: store.nowIso()
   });
 });
 
@@ -947,8 +1001,7 @@ app.delete("/v1/wallet/sessions/:sessionId", (req, res) => {
     return res.status(400).json({ error: "did_required" });
   }
 
-  const store = readStore();
-  const session = store.sessions.find((s) => s.id === req.params.sessionId);
+  const session = store.findSessionById(req.params.sessionId);
   if (!session) {
     return res.status(404).json({ error: "session_not_found" });
   }
@@ -959,8 +1012,9 @@ app.delete("/v1/wallet/sessions/:sessionId", (req, res) => {
     return res.status(409).json({ error: "already_revoked" });
   }
 
-  session.revoked_at = nowIso();
-  writeStore(store);
+  const revokedAt = store.nowIso();
+  store.updateSessionRevoked(session.id, revokedAt);
+
   dlog(`session revoked did=${did} session=${session.id}`);
   pushWalletEvent(did, "session_revoked", {
     session_id: session.id,
@@ -975,7 +1029,7 @@ app.delete("/v1/wallet/sessions/:sessionId", (req, res) => {
   return res.json({
     session_id: session.id,
     status: "revoked",
-    revoked_at: session.revoked_at
+    revoked_at: revokedAt
   });
 });
 
@@ -986,21 +1040,38 @@ app.post("/v1/wallet/challenges/:challengeId/approve", async (req, res) => {
       return res.status(400).json({ error: "invalid_request" });
     }
 
-    const store = readStore();
-    const challenge = store.challenges.find((c) => c.id === req.params.challengeId);
+    const challenge = store.findChallengeById(req.params.challengeId);
     if (!challenge) {
       return res.status(404).json({ error: "challenge_not_found" });
-    }
-    if (challenge.status !== "pending") {
-      return res.status(409).json({ error: "challenge_not_pending", status: challenge.status });
     }
     if (challenge.did_hint && challenge.did_hint !== did) {
       dlog(`approve denied did mismatch challenge=${challenge.id} expected=${challenge.did_hint} got=${did}`);
       return res.status(403).json({ error: "did_mismatch" });
     }
+
+    const respondApproved = (authCode) => res.json({
+      challenge_id: challenge.id,
+      status: "verified",
+      authorization_code: authCode.code,
+      subject_id: authCode.subject_id,
+      consent_required: authCode.consent_required,
+      missing_scopes: authCode.missing_scopes || [],
+      approved_claims: Array.isArray(authCode.approved_claims) ? authCode.approved_claims : []
+    });
+
+    if (challenge.status === "verified") {
+      const existingAuthCode = store.findLatestAuthCodeByChallengeId(challenge.id);
+      if (existingAuthCode && existingAuthCode.did === did) {
+        dlog(`approve idempotent hit challenge=${challenge.id} did=${did}`);
+        return respondApproved(existingAuthCode);
+      }
+      return res.status(409).json({ error: "challenge_not_pending", status: challenge.status });
+    }
+    if (challenge.status !== "pending") {
+      return res.status(409).json({ error: "challenge_not_pending", status: challenge.status });
+    }
     if (new Date(challenge.expires_at) < new Date()) {
-      challenge.status = "expired";
-      writeStore(store);
+      store.updateChallengeStatus(challenge.id, { status: "expired" });
       return res.status(401).json({ error: "challenge_expired" });
     }
 
@@ -1020,10 +1091,23 @@ app.post("/v1/wallet/challenges/:challengeId/approve", async (req, res) => {
     const approvedClaims = normalizeRequestedClaims(approved_claims);
     const filteredProfile = filterProfileClaims(walletProfile, approvedClaims);
 
-    const subjectId = findOrCreateSubject(store, did, challenge.service_id);
-    upsertConsentForApproval(store, challenge.service_id, subjectId, challenge.scopes, "wallet_approve");
-    const authCode = issueAuthCodeFromChallenge(store, challenge, did, filteredProfile, approvedClaims, wallet_url);
-    writeStore(store);
+    const subjectId = store.findOrCreateSubject(did, challenge.service_id);
+    store.upsertConsentForApproval(challenge.service_id, subjectId, challenge.scopes, "wallet_approve");
+    let authCode;
+    try {
+      authCode = issueAuthCodeFromChallenge(challenge, did, filteredProfile, approvedClaims, wallet_url);
+    } catch (err) {
+      if (!String(err.message || "").includes("UNIQUE constraint failed: auth_codes.challenge_id")) {
+        throw err;
+      }
+      const existingAuthCode = store.findLatestAuthCodeByChallengeId(challenge.id);
+      if (!existingAuthCode || existingAuthCode.did !== did) {
+        throw err;
+      }
+      dlog(`approve idempotent unique-hit challenge=${challenge.id} did=${did}`);
+      return respondApproved(existingAuthCode);
+    }
+
     dlog(`challenge approved id=${challenge.id} did=${did} auth_code=${authCode.code}`);
     pushChallengeEvent(challenge.id, "challenge_verified", {
       challenge_id: challenge.id,
@@ -1031,22 +1115,14 @@ app.post("/v1/wallet/challenges/:challengeId/approve", async (req, res) => {
       service_id: challenge.service_id,
       client_id: challenge.client_id,
       redirect_uri: challenge.redirect_uri,
-      status: challenge.status
+      status: "verified"
     });
     pushWalletEvent(did, "challenge_approved", {
       challenge_id: challenge.id,
       authorization_code: authCode.code,
       service_id: challenge.service_id
     });
-    return res.json({
-      challenge_id: challenge.id,
-      status: challenge.status,
-      authorization_code: authCode.code,
-      subject_id: authCode.subject_id,
-      consent_required: authCode.consent_required,
-      missing_scopes: authCode.missing_scopes,
-      approved_claims: authCode.approved_claims
-    });
+    return respondApproved(authCode);
   } catch (err) {
     return res.status(500).json({ error: "approve_failed", message: err.message });
   }
@@ -1057,8 +1133,8 @@ app.post("/v1/wallet/challenges/:challengeId/deny", (req, res) => {
   if (!did) {
     return res.status(400).json({ error: "invalid_request" });
   }
-  const store = readStore();
-  const challenge = store.challenges.find((c) => c.id === req.params.challengeId);
+
+  const challenge = store.findChallengeById(req.params.challengeId);
   if (!challenge) {
     return res.status(404).json({ error: "challenge_not_found" });
   }
@@ -1069,13 +1145,14 @@ app.post("/v1/wallet/challenges/:challengeId/deny", (req, res) => {
   if (challenge.status !== "pending") {
     return res.status(409).json({ error: "challenge_not_pending", status: challenge.status });
   }
-  challenge.status = "denied";
-  challenge.denied_at = nowIso();
-  writeStore(store);
+
+  const deniedAt = store.nowIso();
+  store.updateChallengeStatus(challenge.id, { status: "denied", denied_at: deniedAt });
+
   dlog(`challenge denied id=${challenge.id} did=${did}`);
   pushChallengeEvent(challenge.id, "challenge_denied", { challenge_id: challenge.id, service_id: challenge.service_id });
   pushWalletEvent(did, "challenge_denied", { challenge_id: challenge.id, service_id: challenge.service_id });
-  return res.json({ challenge_id: challenge.id, status: challenge.status, denied_at: challenge.denied_at });
+  return res.json({ challenge_id: challenge.id, status: "denied", denied_at: deniedAt });
 });
 
 app.post("/v1/token/exchange", (req, res) => {
@@ -1095,8 +1172,7 @@ app.post("/v1/token/exchange", (req, res) => {
   }
   dlog(`token exchange attempt code=${code} client=${client_id}`);
 
-  const store = readStore();
-  const authCode = store.authCodes.find((c) => c.code === code);
+  const authCode = store.findAuthCodeByCode(code);
   if (!authCode) {
     return res.status(400).json({ error: "invalid_code" });
   }
@@ -1114,102 +1190,115 @@ app.post("/v1/token/exchange", (req, res) => {
     return res.status(401).json({ error: "client_or_redirect_mismatch" });
   }
 
-  if (authCode.consent_required) {
-    const activeConsents = store.consents
-      .filter((c) => c.service_id === authCode.service_id && c.subject_id === authCode.subject_id && c.status === "active")
-      .sort((a, b) => b.version - a.version);
-    const latestConsent = activeConsents[0];
-    if (!latestConsent || !hasAllScopes(latestConsent.scopes, authCode.scopes)) {
-      return res.status(403).json({
-        error: "consent_required",
-        missing_scopes: authCode.missing_scopes
-      });
+  try {
+    if (!WALLET_AUTHORITATIVE_MODE && authCode.consent_required) {
+      const activeConsents = store.findActiveConsents(authCode.service_id, authCode.subject_id);
+      const latestConsent = activeConsents[0];
+      if (!latestConsent || !hasAllScopes(latestConsent.scopes, authCode.scopes)) {
+        return res.status(403).json({
+          error: "consent_required",
+          missing_scopes: authCode.missing_scopes
+        });
+      }
     }
-  }
 
-  const riskLevel = authCode.risk_action ? "step_up" : "normal";
-  const existingSession = store.sessions.find(
-    (s) =>
-      s.service_id === authCode.service_id &&
-      s.subject_id === authCode.subject_id &&
-      s.scope === authCode.scopes.join(" ") &&
-      s.risk_level === riskLevel &&
-      !s.revoked_at &&
-      new Date(s.expires_at) > new Date()
-  );
-
-  if (existingSession) {
-    existingSession.profile_claims = authCode.profile_claims || existingSession.profile_claims || {
-      name: null,
-      email: null,
-      nickname: null
+    const riskLevel = authCode.risk_action ? "step_up" : "normal";
+    const scopeStr = [...new Set(authCode.scopes)].sort().join(" ");
+    const sessionPatch = {
+      subject_id: authCode.subject_id,
+      requested_claims: authCode.requested_claims || [],
+      approved_claims: authCode.approved_claims || [],
+      profile_claims: authCode.profile_claims || { name: null, email: null, nickname: null },
+      wallet_url: authCode.wallet_url || null,
+      risk_level: riskLevel,
+      access_token: `at_${store.randomToken(24)}`,
+      refresh_token: `rt_${store.randomToken(24)}`,
+      scope: scopeStr,
+      expires_at: store.addMinutes(store.nowIso(), riskLevel === "step_up" ? 10 : 60),
+      created_at: store.nowIso()
     };
-    existingSession.approved_claims = authCode.approved_claims || existingSession.approved_claims || [];
-    existingSession.requested_claims = authCode.requested_claims || existingSession.requested_claims || [];
-    existingSession.wallet_url = authCode.wallet_url || existingSession.wallet_url || null;
-    authCode.used_at = nowIso();
-    writeStore(store);
-    dlog(`token exchange reused session code=${code} session=${existingSession.id} did=${existingSession.did}`);
-    const expiresIn = Math.max(1, Math.floor((new Date(existingSession.expires_at).getTime() - Date.now()) / 1000));
+
+    let targetSession = store.findActiveSessionByDidService(authCode.service_id, authCode.did);
+    if (targetSession) {
+      store.updateSessionForTokenExchange(targetSession.id, sessionPatch);
+      targetSession = store.findSessionById(targetSession.id);
+    } else {
+      const newSession = {
+        id: crypto.randomUUID(),
+        service_id: authCode.service_id,
+        subject_id: authCode.subject_id,
+        did: authCode.did,
+        requested_claims: sessionPatch.requested_claims,
+        approved_claims: sessionPatch.approved_claims,
+        profile_claims: sessionPatch.profile_claims,
+        wallet_url: sessionPatch.wallet_url,
+        risk_level: sessionPatch.risk_level,
+        access_token: sessionPatch.access_token,
+        refresh_token: sessionPatch.refresh_token,
+        scope: sessionPatch.scope,
+        expires_at: sessionPatch.expires_at,
+        created_at: sessionPatch.created_at
+      };
+      const inserted = store.insertSessionOrIgnore(newSession);
+      if (inserted) {
+        targetSession = newSession;
+      } else {
+        const concurrent = store.findActiveSessionByDidService(authCode.service_id, authCode.did);
+        if (!concurrent) {
+          throw new Error("session_upsert_failed");
+        }
+        store.updateSessionForTokenExchange(concurrent.id, sessionPatch);
+        targetSession = store.findSessionById(concurrent.id);
+      }
+    }
+
+    store.updateAuthCodeUsed(code, store.nowIso());
+    const revokedOthers = store.revokeOtherActiveSessionsByDidService(targetSession.service_id, targetSession.did, targetSession.id);
+    revokedOthers.forEach((revoked) => {
+      pushWalletEvent(revoked.did, "session_revoked", {
+        session_id: revoked.id,
+        service_id: revoked.service_id
+      });
+      pushServiceSessionEvent(revoked.service_id, "session_revoked", {
+        session_id: revoked.id,
+        service_id: revoked.service_id,
+        subject_id: revoked.subject_id,
+        did: revoked.did
+      });
+    });
+
+    pushWalletEvent(targetSession.did, "session_created", {
+      session_id: targetSession.id,
+      service_id: targetSession.service_id,
+      scope: targetSession.scope,
+      expires_at: targetSession.expires_at,
+      reused: true
+    });
+    pushServiceSessionEvent(targetSession.service_id, "session_created", {
+      session_id: targetSession.id,
+      service_id: targetSession.service_id,
+      subject_id: targetSession.subject_id,
+      did: targetSession.did,
+      scope: targetSession.scope,
+      expires_at: targetSession.expires_at,
+      reused: true
+    });
+
+    dlog(`token exchange success code=${code} session=${targetSession.id} did=${targetSession.did}`);
+    const expiresIn = Math.max(1, Math.floor((new Date(targetSession.expires_at).getTime() - Date.now()) / 1000));
     return res.json({
-      session_id: existingSession.id,
-      access_token: existingSession.access_token,
+      session_id: targetSession.id,
+      access_token: targetSession.access_token,
       token_type: "Bearer",
       expires_in: expiresIn,
-      refresh_token: existingSession.refresh_token,
-      id_token: `id_${randomToken(24)}`,
-      scope: existingSession.scope
+      refresh_token: targetSession.refresh_token,
+      id_token: `id_${store.randomToken(24)}`,
+      scope: targetSession.scope
     });
+  } catch (err) {
+    dlog(`token exchange failed code=${code} err=${err.message}`);
+    return res.status(500).json({ error: "token_exchange_failed", message: err.message });
   }
-
-  const accessToken = `at_${randomToken(24)}`;
-  const refreshToken = `rt_${randomToken(24)}`;
-
-  const session = {
-    id: crypto.randomUUID(),
-    service_id: authCode.service_id,
-    subject_id: authCode.subject_id,
-    did: authCode.did,
-    requested_claims: authCode.requested_claims || [],
-    approved_claims: authCode.approved_claims || [],
-    profile_claims: authCode.profile_claims || { name: null, email: null, nickname: null },
-    wallet_url: authCode.wallet_url || null,
-    risk_level: riskLevel,
-    access_token: accessToken,
-    refresh_token: refreshToken,
-    scope: authCode.scopes.join(" "),
-    expires_at: addMinutes(nowIso(), riskLevel === "step_up" ? 10 : 60),
-    revoked_at: null,
-    created_at: nowIso()
-  };
-  authCode.used_at = nowIso();
-  store.sessions.push(session);
-  writeStore(store);
-  dlog(`token exchange success code=${code} session=${session.id} did=${session.did}`);
-  pushWalletEvent(session.did, "session_created", {
-    session_id: session.id,
-    service_id: session.service_id,
-    scope: session.scope,
-    expires_at: session.expires_at
-  });
-  pushServiceSessionEvent(session.service_id, "session_created", {
-    session_id: session.id,
-    service_id: session.service_id,
-    subject_id: session.subject_id,
-    did: session.did,
-    scope: session.scope,
-    expires_at: session.expires_at
-  });
-
-  return res.json({
-    session_id: session.id,
-    access_token: accessToken,
-    token_type: "Bearer",
-    expires_in: riskLevel === "step_up" ? 600 : 3600,
-    refresh_token: refreshToken,
-    id_token: `id_${randomToken(24)}`,
-    scope: session.scope
-  });
 });
 
 app.post("/v1/consents", (req, res) => {
@@ -1218,28 +1307,23 @@ app.post("/v1/consents", (req, res) => {
     return res.status(400).json({ error: "invalid_request" });
   }
 
-  const store = readStore();
   const normalizedScopes = [...new Set(scopes)];
-  const versions = store.consents
-    .filter((c) => c.service_id === service_id && c.subject_id === subject_id)
-    .map((c) => c.version);
-  const version = (versions.length ? Math.max(...versions) : 0) + 1;
+  const version = store.getMaxConsentVersion(service_id, subject_id) + 1;
 
   const consent = {
     id: crypto.randomUUID(),
     service_id,
     subject_id,
     scopes: normalizedScopes,
-    scope_hash: hashScopes(normalizedScopes),
+    scope_hash: store.hashScopes(normalizedScopes),
     purpose,
     version,
     status: "active",
-    granted_at: nowIso(),
-    expires_at: ttl_days ? addDays(nowIso(), Number(ttl_days)) : null,
-    revoked_at: null
+    granted_at: store.nowIso(),
+    expires_at: ttl_days ? store.addDays(store.nowIso(), Number(ttl_days)) : null
   };
-  store.consents.push(consent);
-  writeStore(store);
+
+  store.insertConsent(consent);
 
   return res.json({
     consent_id: consent.id,
@@ -1250,13 +1334,12 @@ app.post("/v1/consents", (req, res) => {
     status: consent.status,
     granted_at: consent.granted_at,
     expires_at: consent.expires_at,
-    revoked_at: consent.revoked_at
+    revoked_at: null
   });
 });
 
 app.get("/v1/consents/:consentId", (req, res) => {
-  const store = readStore();
-  const consent = store.consents.find((c) => c.id === req.params.consentId);
+  const consent = store.findConsentById(req.params.consentId);
   if (!consent) {
     return res.status(404).json({ error: "consent_not_found" });
   }
@@ -1274,36 +1357,33 @@ app.get("/v1/consents/:consentId", (req, res) => {
 });
 
 app.delete("/v1/consents/:consentId", (req, res) => {
-  const store = readStore();
-  const consent = store.consents.find((c) => c.id === req.params.consentId);
+  const consent = store.findConsentById(req.params.consentId);
   if (!consent) {
     return res.status(404).json({ error: "consent_not_found" });
   }
 
-  consent.status = "revoked";
-  consent.revoked_at = nowIso();
-  store.sessions
-    .filter((s) => s.service_id === consent.service_id && s.subject_id === consent.subject_id && !s.revoked_at)
-    .forEach((s) => {
-      s.revoked_at = nowIso();
-      pushWalletEvent(s.did, "session_revoked", {
-        session_id: s.id,
-        service_id: s.service_id
-      });
-      pushServiceSessionEvent(s.service_id, "session_revoked", {
-        session_id: s.id,
-        service_id: s.service_id,
-        subject_id: s.subject_id,
-        did: s.did
-      });
+  const revokedAt = store.nowIso();
+  store.updateConsentRevoked(consent.id, revokedAt);
+
+  const revokedSessions = store.revokeSessionsByConsent(consent.service_id, consent.subject_id);
+  revokedSessions.forEach((s) => {
+    pushWalletEvent(s.did, "session_revoked", {
+      session_id: s.id,
+      service_id: consent.service_id
     });
-  writeStore(store);
-  return res.json({ consent_id: consent.id, status: "revoked", revoked_at: consent.revoked_at });
+    pushServiceSessionEvent(consent.service_id, "session_revoked", {
+      session_id: s.id,
+      service_id: consent.service_id,
+      subject_id: consent.subject_id,
+      did: s.did
+    });
+  });
+
+  return res.json({ consent_id: consent.id, status: "revoked", revoked_at: revokedAt });
 });
 
 app.get("/v1/services/:serviceId/profile", requireBearer, (req, res) => {
-  const store = readStore();
-  const session = store.sessions.find((s) => s.access_token === req.accessToken);
+  const session = store.findSessionByAccessToken(req.accessToken);
   if (!session) {
     return res.status(401).json({ error: "invalid_token" });
   }
@@ -1313,6 +1393,7 @@ app.get("/v1/services/:serviceId/profile", requireBearer, (req, res) => {
   if (session.service_id !== req.params.serviceId) {
     return res.status(403).json({ error: "service_mismatch" });
   }
+
   const approvedSet = new Set(Array.isArray(session.approved_claims) ? session.approved_claims : []);
   const profileResponse = {
     service_id: session.service_id,
@@ -1324,7 +1405,6 @@ app.get("/v1/services/:serviceId/profile", requireBearer, (req, res) => {
     risk_level: session.risk_level
   };
 
-  // Dynamically add all approved claims from profile_claims
   if (session.profile_claims) {
     Object.entries(session.profile_claims).forEach(([key, value]) => {
       if (approvedSet.has(key)) {
@@ -1336,6 +1416,18 @@ app.get("/v1/services/:serviceId/profile", requireBearer, (req, res) => {
   return res.json(profileResponse);
 });
 
+app.use((err, _req, res, _next) => {
+  dlog(`unhandled error: ${err?.message || err}`);
+  return res.status(500).json({
+    error: "internal_server_error",
+    message: err?.message || "unknown_error"
+  });
+});
+
+// Initialize database and start server
+const db = getDb();
+initializeSchema(db);
+startCleanupScheduler();
 loadServiceRegistry();
 
 app.listen(PORT, () => {
