@@ -100,12 +100,26 @@ async function createWallet(name = 'test-wallet') {
   return result.data;
 }
 
-async function signChallenge(did, challengeId, nonce, audience, expiresAt) {
+async function signChallenge(
+  did,
+  challengeId,
+  nonce,
+  audience,
+  expiresAt,
+  {
+    serviceId = DEFAULT_SERVICE_ID,
+    requestedClaims = [],
+    approvedClaims = []
+  } = {}
+) {
   const result = await httpPost(`${WALLET_URL}/v1/wallets/sign`, {
     did,
     challenge_id: challengeId,
     nonce,
     audience,
+    service_id: serviceId,
+    requested_claims: requestedClaims,
+    approved_claims: approvedClaims,
     expires_at: expiresAt
   });
   if (result.status !== 200) throw new Error(`Failed to sign challenge: ${JSON.stringify(result.data)}`);

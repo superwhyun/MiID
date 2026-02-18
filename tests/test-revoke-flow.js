@@ -16,7 +16,12 @@ async function testRevokeFlow() {
       challenge.challenge_id,
       challenge.nonce,
       h.DEFAULT_CLIENT_ID,
-      challenge.expires_at
+      challenge.expires_at,
+      {
+        serviceId: h.DEFAULT_SERVICE_ID,
+        requestedClaims: challenge.requested_claims || [],
+        approvedClaims: challenge.requested_claims || []
+      }
     );
     const approval = await h.approveChallenge(challenge.challenge_id, wallet.did, signature.signature);
     const tokenResult = await h.exchangeToken(approval.data.authorization_code);

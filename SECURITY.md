@@ -77,7 +77,11 @@ async function resolveDidDocument({ did, walletUrl }) {
 
 ### 2.1 심각 (High Severity)
 
-#### 2.1.1 DID Resolution 신뢰 문제
+#### 2.1.1 DID Resolution 신뢰 문제 (✅ 해결 완료 - 2026-02-18)
+
+**현재 상태**:
+- `did:key` 기반 검증으로 전환되어, Gateway가 요청자가 제공한 `wallet_url`을 신뢰 루트로 사용하지 않습니다.
+- `wallet_url`은 프로필 조회 힌트(선택값)로만 취급됩니다.
 
 **위치**: `apps/gateway/server.js:306-321`
 
@@ -115,7 +119,11 @@ POST /v1/wallet/challenges/:id/approve
 
 ---
 
-#### 2.1.2 Wallet Event Stream 인증 부재
+#### 2.1.2 Wallet Event Stream 인증 부재 (✅ 해결 완료 - 2026-02-18)
+
+**현재 상태**:
+- `/v1/wallet/events`는 `did` 단독 연결이 불가하며, `connection_token`이 필수입니다.
+- 토큰은 DID 소유 증명(서명 검증) 후 짧은 TTL로 발급됩니다.
 
 **위치**: `apps/gateway/server.js:576-597`
 
@@ -153,7 +161,11 @@ app.get("/v1/wallet/events", (req, res) => {
 
 ### 2.2 중간 (Medium Severity)
 
-#### 2.2.1 서명 페이로드 바인딩 불완전
+#### 2.2.1 서명 페이로드 바인딩 불완전 (✅ 해결 완료 - 2026-02-18)
+
+**현재 상태**:
+- 서명/검증 payload에 `service_id`, `requested_claims`, `approved_claims`가 포함됩니다.
+- claim 배열은 정규화(중복 제거/정렬) 후 서명되어 컨텍스트 재사용 위험을 낮췄습니다.
 
 **위치**: `apps/gateway/server.js:1119-1124`
 
@@ -332,7 +344,7 @@ const defaultClientSecret = process.env.SERVICE_CLIENT_SECRET || "dev-service-se
 
 | 현재 | 권장 | 우선순위 |
 |------|------|----------|
-| `did:miid` (로컬 UUID) | `did:key` (자체 검증 가능) | 높음 |
+| `did:key` (적용됨) | 유지 | 높음 |
 | | `did:web` (도메인 기반) | 중간 |
 | | Universal Resolver 통합 | 중간 |
 
@@ -342,15 +354,14 @@ const defaultClientSecret = process.env.SERVICE_CLIENT_SECRET || "dev-service-se
 - W3C 표준 준수
 
 ```
-현재: did:miid:550e8400-e29b-41d4-a716-446655440000
-권장: did:key:z6Mkf5rGMoatrSj1f4CyvuHBeXJELe9RPdzo2PKGNCKVtZxP
+현재/적용: did:key:z6Mkf5rGMoatrSj1f4CyvuHBeXJELe9RPdzo2PKGNCKVtZxP
 ```
 
 ### 3.2 DID Document 검증 강화
 
 ```
 현재 흐름:
-  Wallet → (wallet_url 제공) → Gateway → (fetch) → Wallet Server → DID Doc
+  Wallet → Gateway → did:key에서 공개키 추출 → DID Doc
 
 권장 흐름 (옵션 A - Universal Resolver):
   Wallet → Gateway → Universal Resolver → DID Doc (캐시 가능)
@@ -415,9 +426,9 @@ const payload = toPayloadString({
 
 | 우선순위 | 이슈 | 영향 | 예상 공수 |
 |----------|------|------|-----------|
-| **P0** | DID Resolution 신뢰 문제 | 신원 사칭 | 높음 |
-| **P0** | Wallet SSE 인증 부재 | 정보 유출 | 중간 |
-| **P1** | 서명 페이로드 바인딩 | Scope 혼동 | 낮음 |
+| **P0** | DID Resolution 신뢰 문제 (완료) | 신원 사칭 | 높음 |
+| **P0** | Wallet SSE 인증 부재 (완료) | 정보 유출 | 중간 |
+| **P1** | 서명 페이로드 바인딩 (완료) | Scope 혼동 | 낮음 |
 | **P1** | Challenge DID 검증 | 의도치 않은 승인 | 낮음 |
 | **P2** | Sign Secret 내부 신뢰 | 로컬 공격 | 중간 |
 | **P2** | Token PoP 부재 | Code 탈취 | 중간 |
@@ -425,9 +436,9 @@ const payload = toPayloadString({
 ### 4.3 권장 로드맵
 
 **Phase 1 - 필수 보안 (프로덕션 전)**
-- [ ] DID Resolution 신뢰 체계 구축 (did:key 도입 또는 Resolver 레지스트리)
-- [ ] Wallet SSE 엔드포인트 인증 추가
-- [ ] 서명 페이로드에 service_id, scopes 추가
+- [x] DID Resolution 신뢰 체계 구축 (did:key 도입 또는 Resolver 레지스트리)
+- [x] Wallet SSE 엔드포인트 인증 추가
+- [x] 서명 페이로드에 service_id, scopes 추가
 
 **Phase 2 - 강화**
 - [ ] PKCE 지원 추가

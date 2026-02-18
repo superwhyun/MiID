@@ -564,6 +564,11 @@ async function approveChallenge(challengeId, did, approvedClaims = null) {
       challenge_id: challengeId,
       nonce: current.nonce,
       audience: current.client_id,
+      service_id: current.service_id,
+      requested_claims: Array.isArray(current.requested_claims) ? current.requested_claims : [],
+      approved_claims: Array.isArray(approvedClaims)
+        ? approvedClaims
+        : (Array.isArray(current.requested_claims) ? current.requested_claims : []),
       expires_at: current.expires_at
     })
   });
@@ -634,6 +639,9 @@ async function issueWalletEventsConnectionToken(did) {
       challenge_id: proof.challenge_id,
       nonce: proof.nonce,
       audience: proof.audience,
+      service_id: "wallet_events",
+      requested_claims: [],
+      approved_claims: [],
       expires_at: proof.expires_at
     })
   });

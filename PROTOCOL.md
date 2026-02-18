@@ -981,6 +981,9 @@ Content-Type: application/json
   "challenge_id": "uuid",
   "nonce": "...",
   "audience": "web-client",
+  "service_id": "service-test",
+  "requested_claims": ["email", "name", "nickname"],
+  "approved_claims": ["email", "name"],
   "expires_at": "..."
 }
 ```
@@ -1320,6 +1323,9 @@ X-Wallet-Sign-Secret: {secret}
   "challenge_id": "uuid",
   "nonce": "...",
   "audience": "web-client",
+  "service_id": "service-test",
+  "requested_claims": ["email", "name", "nickname"],
+  "approved_claims": ["email", "name"],
   "expires_at": "..."
 }
 ```
@@ -1334,6 +1340,9 @@ X-Wallet-Sign-Secret: {secret}
     "challenge_id": "uuid",
     "nonce": "...",
     "audience": "web-client",
+    "service_id": "service-test",
+    "requested_claims": ["email", "name", "nickname"],
+    "approved_claims": ["email", "name"],
     "expires_at": "..."
   }
 }
@@ -1413,11 +1422,16 @@ Challenge 서명 시 사용하는 payload:
   "challenge_id": "uuid",
   "nonce": "random_base64url_string",
   "audience": "client_id",
+  "service_id": "service_id",
+  "requested_claims": ["claim_a", "claim_b"],
+  "approved_claims": ["claim_a"],
   "expires_at": "ISO8601_timestamp"
 }
 ```
 
 JSON.stringify() 후 UTF-8 bytes로 서명
+
+- `requested_claims`, `approved_claims`는 서명 전 정규화(중복 제거, 문자열 trim, 오름차순 정렬)합니다.
 
 ### 7.5 Token Formats
 

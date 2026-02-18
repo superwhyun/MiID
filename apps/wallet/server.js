@@ -172,6 +172,17 @@ function signPayload(privateKeyPem, payload) {
   return crypto.sign(null, Buffer.from(payload), privateKeyPem).toString("base64url");
 }
 
+function normalizeClaimList(list) {
+  if (!Array.isArray(list)) {
+    return [];
+  }
+  return [...new Set(list)]
+    .filter((item) => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .sort();
+}
+
 function createWalletApp() {
   const app = express();
   app.use(express.json());
@@ -345,8 +356,17 @@ function createWalletApp() {
         return res.status(401).json({ error: "unauthorized_sign_request" });
       }
     }
-    const { did, challenge_id, nonce, audience, expires_at } = req.body || {};
-    if (!did || !challenge_id || !nonce || !audience || !expires_at) {
+    const {
+      did,
+      challenge_id,
+      nonce,
+      audience,
+      service_id,
+      requested_claims,
+      approved_claims,
+      expires_at
+    } = req.body || {};
+    if (!did || !challenge_id || !nonce || !audience || !service_id || !expires_at) {
       return res.status(400).json({ error: "invalid_request" });
     }
 
@@ -356,14 +376,23 @@ function createWalletApp() {
       return res.status(404).json({ error: "wallet_not_found" });
     }
 
-    const payload = JSON.stringify({ challenge_id, nonce, audience, expires_at });
+    const payloadObj = {
+      challenge_id,
+      nonce,
+      audience,
+      service_id,
+      requested_claims: normalizeClaimList(requested_claims),
+      approved_claims: normalizeClaimList(approved_claims),
+      expires_at
+    };
+    const payload = JSON.stringify(payloadObj);
     const signature = signPayload(wallet.private_key_pem, payload);
     dlog(`sign ok did=${did} challenge_id=${challenge_id}`);
     return res.json({
       did,
       kid: buildKidFromDid(wallet.did),
       signature,
-      signed_payload: JSON.parse(payload)
+      signed_payload: payloadObj
     });
   });
 

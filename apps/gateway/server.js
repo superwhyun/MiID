@@ -231,6 +231,10 @@ function normalizeRequestedClaims(requestedClaims) {
     .filter((claim) => claim.length > 0);
 }
 
+function normalizeClaimsForSignature(claims) {
+  return normalizeRequestedClaims(claims).sort();
+}
+
 function buildServicePolicyHash(policy = {}) {
   return buildPolicyHash(
     normalizeScopes(policy.default_scopes),
@@ -737,6 +741,9 @@ app.post("/v1/wallet/events/token", async (req, res) => {
       challenge_id: challengeId,
       nonce,
       audience,
+      service_id: "wallet_events",
+      requested_claims: [],
+      approved_claims: [],
       expires_at: expiresAt
     });
     const ok = verifyWithDidDocument(resolved.didDocument, payload, signature);
@@ -956,10 +963,15 @@ app.post("/v1/auth/verify", async (req, res) => {
     const resolved = await resolveDidDocument({ did, walletUrl: wallet_url });
     const wallet = resolved.wallet;
     const walletProfile = normalizeWalletProfile(wallet);
+    const requestedClaimsForSig = normalizeClaimsForSignature(challenge.requested_claims);
+    const approvedClaimsForSig = [...requestedClaimsForSig];
     const payload = toPayloadString({
       challenge_id: challenge.id,
       nonce: challenge.nonce,
       audience: challenge.client_id,
+      service_id: challenge.service_id,
+      requested_claims: requestedClaimsForSig,
+      approved_claims: approvedClaimsForSig,
       expires_at: challenge.expires_at
     });
     const ok = verifyWithDidDocument(resolved.didDocument, payload, signature);
@@ -1214,6 +1226,9 @@ app.post("/v1/wallet/challenges/:challengeId/approve", async (req, res) => {
       return res.status(401).json({ error: "challenge_expired" });
     }
 
+    const approvedClaims = normalizeRequestedClaims(approved_claims);
+    const requestedClaimsForSig = normalizeClaimsForSignature(challenge.requested_claims);
+    const approvedClaimsForSig = normalizeClaimsForSignature(approvedClaims);
     const resolved = await resolveDidDocument({ did, walletUrl: wallet_url });
     const wallet = resolved.wallet;
     const walletProfile = normalizeWalletProfile(wallet);
@@ -1221,13 +1236,15 @@ app.post("/v1/wallet/challenges/:challengeId/approve", async (req, res) => {
       challenge_id: challenge.id,
       nonce: challenge.nonce,
       audience: challenge.client_id,
+      service_id: challenge.service_id,
+      requested_claims: requestedClaimsForSig,
+      approved_claims: approvedClaimsForSig,
       expires_at: challenge.expires_at
     });
     const ok = verifyWithDidDocument(resolved.didDocument, payload, signature);
     if (!ok) {
       return res.status(401).json({ error: "invalid_signature" });
     }
-    const approvedClaims = normalizeRequestedClaims(approved_claims);
     const filteredProfile = filterProfileClaims(walletProfile, approvedClaims);
 
     const subjectId = store.findOrCreateSubject(did, challenge.service_id);

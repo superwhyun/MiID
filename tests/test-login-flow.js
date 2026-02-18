@@ -32,7 +32,12 @@ async function testLoginFlow() {
       challenge.challenge_id,
       challenge.nonce,
       h.DEFAULT_CLIENT_ID,
-      challenge.expires_at
+      challenge.expires_at,
+      {
+        serviceId: h.DEFAULT_SERVICE_ID,
+        requestedClaims: challenge.requested_claims || [],
+        approvedClaims: challenge.requested_claims || []
+      }
     );
     h.assertNotNull(signature.signature, 'Signature should exist');
 
