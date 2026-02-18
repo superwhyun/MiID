@@ -6,6 +6,7 @@ const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:14000';
 const WALLET_URL = process.env.WALLET_URL || 'http://localhost:17000';
 const DEFAULT_SERVICE_ID = 'service-test';
 const DEFAULT_CLIENT_ID = 'web-client';
+const DEFAULT_CLIENT_SECRET = process.env.SERVICE_CLIENT_SECRET || process.env.CLIENT_SECRET || 'dev-service-secret';
 const DEFAULT_REDIRECT_URI = 'https://service-test.local/callback';
 const DEFAULT_SCOPES = ['profile', 'email'];
 
@@ -127,6 +128,10 @@ async function createChallenge(options = {}) {
     scopes,
     did_hint: didHint,
     require_user_approval: true
+  }, {
+    'X-Client-Id': clientId,
+    'X-Client-Secret': DEFAULT_CLIENT_SECRET,
+    'X-Local-Wallet-Ready': process.env.LOCAL_WALLET_READY || '1'
   });
 
   if (result.status !== 201) throw new Error(`Failed to create challenge: ${JSON.stringify(result.data)}`);

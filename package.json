@@ -20,8 +20,10 @@
     "build:mac": "electron-packager . MiID --platform=darwin --arch=arm64 --overwrite --out=dist --app-bundle-id=com.miid.desktop --app-version=0.1.0 --prune=true --ignore='^/(data|docs|api|db|\\.agent|\\.serena|dist)'"
   },
   "dependencies": {
+    "better-sqlite3": "^11.7.0",
     "eventsource": "^4.1.0",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "redis": "^4.7.1"
   },
   "devDependencies": {
     "@electron/packager": "^19.0.5",
