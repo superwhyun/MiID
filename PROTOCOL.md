@@ -761,70 +761,6 @@ Authorization: Bearer at_xxx
 
 ---
 
-### 3.8 POST /v1/auth/reuse-session
-
-기존 세션 재사용을 시도합니다.
-
-**Request**
-```http
-POST /v1/auth/reuse-session HTTP/1.1
-Content-Type: application/json
-X-Client-Id: web-client
-X-Client-Secret: dev-service-secret
-
-{
-  "did": "did:key:z6MksXxxExampleDidKey",
-  "scopes": ["profile", "email"]
-}
-```
-
-**Response (200 OK)**
-```json
-{
-  "reused": true,
-  "session_id": "uuid",
-  "access_token": "at_xxx",
-  "refresh_token": "rt_xxx",
-  "scope": "profile email",
-  "expires_at": "..."
-}
-```
-
-**Error Responses**
-
-| Status | Error Code | 설명 |
-|--------|------------|------|
-| 403 | `wallet_approval_required` | 월렛 승인 필요 |
-| 404 | `no_reusable_session` | 재사용 가능한 세션 없음 |
-
----
-
-### 3.9 POST /v1/wallet/notify-reuse
-
-세션 재사용을 Wallet에 알립니다.
-
-**Request**
-```http
-POST /v1/wallet/notify-reuse HTTP/1.1
-Content-Type: application/json
-X-Client-Id: web-client
-X-Client-Secret: dev-service-secret
-
-{
-  "did": "did:key:z6MksXxxExampleDidKey",
-  "scopes": ["profile", "email"]
-}
-```
-
-**Response (200 OK)**
-```json
-{
-  "ok": true
-}
-```
-
----
-
 ## 4. Gateway ↔ Wallet (SSE)
 
 ### 4.1 GET /v1/wallet/events
@@ -944,22 +880,6 @@ Challenge 만료
   "at": "..."
 }
 ```
-
-#### `login_reused`
-세션 재사용 로그인 알림
-```json
-{
-  "type": "login_reused",
-  "payload": {
-    "service_id": "service-test",
-    "scopes": ["profile", "email"],
-    "reused": true
-  },
-  "at": "..."
-}
-```
-
----
 
 ## 5. Wallet → Gateway (API)
 

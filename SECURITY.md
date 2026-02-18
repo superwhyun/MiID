@@ -243,36 +243,7 @@ if (signSecret) {
 
 ---
 
-#### 2.2.4 세션 재사용 모드 우회
-
-**위치**: `apps/gateway/server.js:770-805`
-
-**취약점 설명**:
-`WALLET_AUTHORITATIVE_MODE`가 비활성화되면 Wallet 승인 없이 기존 세션을 재사용할 수 있습니다.
-
-```javascript
-app.post("/v1/auth/reuse-session", (req, res) => {
-  if (WALLET_AUTHORITATIVE_MODE) {
-    return res.status(403).json({
-      error: "wallet_authoritative_mode_enabled",
-      message: "Session reuse shortcut is disabled."
-    });
-  }
-  // ...Wallet 승인 없이 세션 재사용
-});
-```
-
-**잠재적 문제**:
-- 사용자 동의 없이 세션 재사용
-- DID 자기주권 원칙 위배
-
-**권장 해결책**:
-- `WALLET_AUTHORITATIVE_MODE`를 기본값 `true`로 설정 (현재도 그러함)
-- 운영 환경에서 이 값 변경 시 경고 로깅
-
----
-
-#### 2.2.5 Authorization Code Replay 가능성
+#### 2.2.4 Authorization Code Replay 가능성
 
 **위치**: `apps/gateway/server.js:1201-1234`
 

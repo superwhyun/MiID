@@ -683,17 +683,7 @@ function showAutoApprovedNotification(serviceName, scopes) {
   n.show();
 }
 
-function showReusedLoginNotification(serviceName, scopes) {
-  const displayName = serviceName || "unknown-service";
-  const n = new Notification({
-    title: "MiID 로그인",
-    body: `${displayName} 로그인 재사용 (${scopes.join(", ")})`
-  });
-  n.on("click", () => openWindow());
-  n.show();
-}
-
-async function handleWalletEvent(data, sourceDid) {
+async function handleWalletEvent(data, _sourceDid) {
   if (data.type === "challenge_created") {
     const serviceId = data.payload.service_id;
     const serviceName = data.payload.service_name || serviceId;
@@ -768,13 +758,6 @@ async function handleWalletEvent(data, sourceDid) {
     return;
   }
 
-  if (data.type === "login_reused") {
-    const serviceId = data.payload.service_id;
-    const serviceName = data.payload.service_name || serviceId;
-    const scopes = data.payload.scopes || [];
-    dlog(`event login_reused service=${serviceId} did=${sourceDid}`);
-    showReusedLoginNotification(serviceName, scopes);
-  }
 }
 
 function closeEventStreams() {
@@ -811,7 +794,6 @@ function connectEventStreams() {
     es.addEventListener("session_created", forward);
     es.addEventListener("session_revoked", forward);
     es.addEventListener("approved_cancelled", forward);
-    es.addEventListener("login_reused", forward);
     es.onerror = () => {
       dlog(`wallet event stream error did=${did} (auto-retry)`);
     };

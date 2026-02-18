@@ -13,9 +13,7 @@ const PORT = process.env.GATEWAY_PORT || 14000;
 const DATA_DIR = path.join(__dirname, "..", "..", "data");
 const SERVICES_FILE = path.join(DATA_DIR, "services.json");
 const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
-const REQUIRE_WALLET_APPROVAL_FOR_REUSE = process.env.REQUIRE_WALLET_APPROVAL_FOR_REUSE !== "0";
 const REQUIRE_LOCAL_WALLET_READY = process.env.LOCAL_WALLET_REQUIRED !== "0";
-const WALLET_AUTHORITATIVE_MODE = process.env.WALLET_AUTHORITATIVE_MODE !== "0";
 
 let SERVICE_REGISTRY = new Map();
 
@@ -145,11 +143,6 @@ function getServiceNameByServiceId(serviceId) {
 
 function toPayloadString(payload) {
   return JSON.stringify(payload);
-}
-
-function hasAllScopes(consentScopes, requestedScopes) {
-  const set = new Set(consentScopes);
-  return requestedScopes.every((s) => set.has(s));
 }
 
 function parseScopeText(scopeText) {
@@ -821,64 +814,6 @@ app.post("/v1/auth/challenge", (req, res) => {
   });
 });
 
-app.post("/v1/auth/reuse-session", (req, res) => {
-  if (WALLET_AUTHORITATIVE_MODE) {
-    return res.status(403).json({
-      error: "wallet_authoritative_mode_enabled",
-      message: "Session reuse shortcut is disabled. Route all login requests through wallet approval."
-    });
-  }
-  const service = authenticateServiceClient(req, res);
-  if (!service) {
-    return;
-  }
-  if (REQUIRE_WALLET_APPROVAL_FOR_REUSE) {
-    return res.status(403).json({
-      error: "wallet_approval_required",
-      message: "Session reuse is disabled until wallet approval is completed."
-    });
-  }
-  const { did, scopes } = req.body || {};
-  if (!did || !Array.isArray(scopes) || scopes.length === 0) {
-    return res.status(400).json({ error: "invalid_request" });
-  }
-
-  const reusable = store.findReusableSession(service.service_id, did, scopes);
-  if (!reusable) {
-    return res.status(404).json({ error: "no_reusable_session" });
-  }
-  dlog(`reused session lookup hit did=${did} service=${service.service_id} session=${reusable.id}`);
-  return res.json({
-    reused: true,
-    session_id: reusable.id,
-    access_token: reusable.access_token,
-    refresh_token: reusable.refresh_token,
-    scope: reusable.scope,
-    expires_at: reusable.expires_at
-  });
-});
-
-app.post("/v1/wallet/notify-reuse", (req, res) => {
-  const service = authenticateServiceClient(req, res);
-  if (!service) {
-    return;
-  }
-  const { did, scopes } = req.body || {};
-  if (!did) {
-    return res.status(400).json({ error: "did_required" });
-  }
-  const payload = {
-    service_id: service.service_id,
-    service_name: service.service_name || service.service_id,
-    scopes: Array.isArray(scopes) ? scopes : [],
-    reused: true,
-    at: store.nowIso()
-  };
-  pushWalletEvent(did, "login_reused", payload);
-  dlog(`wallet notified reused login did=${did} service=${service.service_id}`);
-  return res.json({ ok: true });
-});
-
 app.post("/v1/auth/verify", async (req, res) => {
   try {
     const { challenge_id, did, signature, wallet_url } = req.body || {};
@@ -1288,17 +1223,6 @@ app.post("/v1/token/exchange", (req, res) => {
   }
 
   try {
-    if (!WALLET_AUTHORITATIVE_MODE && authCode.consent_required) {
-      const activeConsents = store.findActiveConsents(authCode.service_id, authCode.subject_id);
-      const latestConsent = activeConsents[0];
-      if (!latestConsent || !hasAllScopes(latestConsent.scopes, authCode.scopes)) {
-        return res.status(403).json({
-          error: "consent_required",
-          missing_scopes: authCode.missing_scopes
-        });
-      }
-    }
-
     const riskLevel = authCode.risk_action ? "step_up" : "normal";
     const scopeStr = [...new Set(authCode.scopes)].sort().join(" ");
     const sessionPatch = {
