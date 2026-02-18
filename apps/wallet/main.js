@@ -1,6 +1,6 @@
 const path = require("path");
 const fs = require("fs");
-const { app, Tray, Menu, BrowserWindow, ipcMain, Notification, nativeImage } = require("electron");
+const { app, Tray, Menu, BrowserWindow, ipcMain, Notification, nativeImage, screen } = require("electron");
 const { EventSource } = require("eventsource");
 const { startWalletServer } = require("./server");
 
@@ -634,9 +634,23 @@ function openWindow() {
       }
     });
   }
+  positionWindowTopRight();
   win.show();
   win.focus();
   dlog("window opened");
+}
+
+function positionWindowTopRight() {
+  if (!win || win.isDestroyed()) {
+    return;
+  }
+  const targetDisplay = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const area = targetDisplay?.workArea || screen.getPrimaryDisplay().workArea;
+  const [width, height] = win.getSize();
+  const margin = 16;
+  const x = Math.round(area.x + area.width - width - margin);
+  const y = Math.round(area.y + margin);
+  win.setPosition(x, y);
 }
 
 function showApproveNotification(serviceName, scopes, newClaims = []) {
@@ -1070,13 +1084,11 @@ ipcMain.handle("profile-fields:get", async () => {
 });
 
 app.whenReady().then(async () => {
-  if (process.env.MIID_HIDE_DOCK === "1") {
-    if (process.platform === "darwin" && typeof app.setActivationPolicy === "function") {
-      app.setActivationPolicy("accessory");
-    }
-    if (app.dock && typeof app.dock.hide === "function") {
-      app.dock.hide();
-    }
+  if (process.platform === "darwin" && typeof app.setActivationPolicy === "function") {
+    app.setActivationPolicy("accessory");
+  }
+  if (process.platform === "darwin" && app.dock && typeof app.dock.hide === "function") {
+    app.dock.hide();
   }
   process.env.MIID_DATA_DIR = process.env.MIID_DATA_DIR || getWalletDataDir();
   process.env.WALLET_SIGN_SECRET = walletSignSecret;

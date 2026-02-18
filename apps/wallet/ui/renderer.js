@@ -6,6 +6,7 @@ const statusEl = document.getElementById("status");
 const didLabelEl = document.getElementById("didLabel");
 const pendingCountEl = document.getElementById("pendingCount");
 const identityCountEl = document.getElementById("identityCount");
+const identityServiceSearchEl = document.getElementById("identityServiceSearch");
 const profileModal = document.getElementById("profileModal");
 const profileModalBody = document.getElementById("profileModalBody");
 const deleteModal = document.getElementById("deleteModal");
@@ -21,6 +22,7 @@ let approvedByDid = new Map();
 let profileFields = [];
 let currentEditingDid = null;
 let currentDeletingDid = null;
+let identityServiceKeyword = "";
 
 // 설정 파일 로드 (샘플 필드 정의용으로만 사용)
 async function loadProfileFields() {
@@ -540,6 +542,18 @@ function createDidCard(wallet) {
   const connectedServices = new Set();
   didApproved.forEach((item) => connectedServices.add(item.service_id));
   didActiveServices.forEach((item) => connectedServices.add(item.service_id));
+  if (identityServiceKeyword) {
+    const keyword = identityServiceKeyword.toLowerCase();
+    const matched = [...didApproved, ...didActiveServices].some((item) => {
+      const serviceName = typeof item?.service_name === "string" && item.service_name.trim().length > 0
+        ? item.service_name
+        : item?.service_id;
+      return typeof serviceName === "string" && serviceName.toLowerCase().includes(keyword);
+    });
+    if (!matched) {
+      return null;
+    }
+  }
 
   // Unified Profile에서 이름/닉네임 추출
   const cardProfile = wallet.profile || {};
@@ -685,13 +699,29 @@ function renderDids() {
     didsEl.appendChild(empty);
     return;
   }
+  let renderedCount = 0;
   wallets.forEach((wallet) => {
     try {
-      didsEl.appendChild(createDidCard(wallet));
+      const card = createDidCard(wallet);
+      if (!card) {
+        return;
+      }
+      didsEl.appendChild(card);
+      renderedCount += 1;
     } catch (err) {
       console.error("Failed to render DID card", wallet.did, err);
     }
   });
+  if (renderedCount === 0 && identityServiceKeyword) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.innerHTML = `
+      <div class="empty-state-icon">🔎</div>
+      <div class="empty-state-text">검색 결과가 없어요</div>
+      <div class="empty-state-hint">서비스 이름으로 다시 검색해보세요</div>
+    `;
+    didsEl.appendChild(empty);
+  }
 }
 
 // ==================== 인증 요청 ====================
@@ -951,4 +981,8 @@ deleteModal.addEventListener("click", (e) => {
 });
 
 addDidBtn.addEventListener("click", addDid);
+identityServiceSearchEl.addEventListener("input", (e) => {
+  identityServiceKeyword = String(e.target.value || "").trim();
+  renderDids();
+});
 boot();
