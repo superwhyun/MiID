@@ -15,7 +15,7 @@
     // Modal elements
     modalManage: document.getElementById("modal-manage"),
     inputOriginalId: document.getElementById("manage-id-original"),
-    inputServiceId: document.getElementById("input-service-id"),
+    serviceIdReadonly: document.getElementById("service-id-readonly"),
     inputServiceName: document.getElementById("input-service-name"),
     inputFields: document.getElementById("input-fields"),
     btnSaveManage: document.getElementById("btn-save-manage"),
@@ -296,12 +296,12 @@
     if (serviceId) {
       const config = servicesState.get(serviceId).config;
       elements.inputOriginalId.value = serviceId;
-      elements.inputServiceId.value = config.service_id;
+      elements.serviceIdReadonly.textContent = config.service_id;
       elements.inputServiceName.value = config.service_name;
       elements.inputFields.value = (config.requested_claims || []).join(", ");
     } else {
       elements.inputOriginalId.value = "";
-      elements.inputServiceId.value = "";
+      elements.serviceIdReadonly.textContent = "Auto-generated on create";
       elements.inputServiceName.value = "";
       elements.inputFields.value = "name, email, nickname";
     }
@@ -314,12 +314,12 @@
   async function saveConfig() {
     const originalId = elements.inputOriginalId.value;
     const body = {
-      service_id: elements.inputServiceId.value.trim(),
       service_name: elements.inputServiceName.value.trim(),
       requested_fields: elements.inputFields.value.trim()
     };
-
-    if (!body.service_id) return (elements.manageError.textContent = "Service ID required", elements.manageError.classList.remove("hidden"));
+    if (originalId) {
+      body.original_id = originalId;
+    }
 
     try {
       await apiCall("POST", "/service/save", body);

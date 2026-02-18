@@ -484,7 +484,7 @@ sequenceDiagram
     participant BE as Service Backend
     participant GW as Gateway
 
-    UI->>BE: POST /service/manage<br/>{service_id, requested_fields}
+    UI->>BE: POST /service/save<br/>{service_name, requested_fields}
     BE->>GW: POST /v1/services<br/>(새 서비스 등록)
     GW-->>BE: 등록 완료
     BE->>BE: CURRENT_SERVICE_ID 업데이트
@@ -494,16 +494,16 @@ sequenceDiagram
 
     Note over UI,GW: 이후 로그인은 새 설정으로 수행
     UI->>BE: POST /auth/start
-    BE->>GW: POST /v1/auth/challenge<br/>(새 service_id, client_id, claims)
+    BE->>GW: POST /v1/auth/challenge<br/>(UUID service_id, client_id, claims)
 ```
 
 **주의사항:**
 - EventSource 연결 시에도 `CURRENT_CLIENT_ID`를 사용하여 인증
 - 서비스 설정 변경 후 기존 EventSource 연결은 유지됨 (재연결 시 새 설정 적용)
+- 신규 서비스의 `service_id`는 백엔드에서 UUID(v4)로 생성되는 내부 식별자입니다.
 
 ## TODO
 
-- [ ] 서비스 식별자(`service_id`)를 `service DID` 기반으로 전환
 - [ ] 멀티테넌시 격리 (tenant 경계 기반 subject/session/consent 분리)
 - [ ] 서비스 인증 강화 (`private_key_jwt` 또는 mTLS, 키 회전)
 - [ ] DID resolver/신뢰앵커 기반 공개키 검증 (`did:miid` 보강)

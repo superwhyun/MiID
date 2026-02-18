@@ -394,6 +394,19 @@ body {
   opacity: 0.6;
 }
 
+.readonly-value {
+  width: 100%;
+  padding: 12px 16px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 14px;
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+}
+
 .btn {
   width: 100%;
   padding: 14px 24px;

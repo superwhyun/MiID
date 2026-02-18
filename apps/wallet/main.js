@@ -497,20 +497,21 @@ async function shouldAutoApproveChallenge(serviceId, serviceVersion, policyHash,
     && Number.isInteger(approvalState.approved_version)
     && approvalState.approved_version === serviceVersion;
   const hashMatched = Boolean(policyHash && approvalState.policy_hash && approvalState.policy_hash === policyHash);
+  const policyMatched = Number.isInteger(serviceVersion) ? versionMatched : hashMatched;
   return {
-    autoApprove: versionMatched || hashMatched,
+    autoApprove: newClaims.length === 0 && policyMatched,
     newClaims,
     existingApproved: approvedClaims
   };
 }
 
-async function findAutoApproveDid(serviceId, serviceVersion, policyHash) {
+async function findAutoApproveDid(serviceId, serviceVersion, policyHash, requestedClaims = []) {
   if (!Number.isInteger(serviceVersion) && !policyHash) {
     return { did: null, autoApprove: false, newClaims: [] };
   }
   const dids = getWalletDids();
   for (const did of dids) {
-    const result = await shouldAutoApproveChallenge(serviceId, serviceVersion, policyHash, [], did);
+    const result = await shouldAutoApproveChallenge(serviceId, serviceVersion, policyHash, requestedClaims, did);
     if (result.autoApprove) {
       return { did, ...result };
     }
@@ -706,7 +707,12 @@ async function handleWalletEvent(data, sourceDid) {
         if (getWalletDids().length === 1) {
           targetDid = getWalletDids()[0];
         } else {
-          const findResult = await findAutoApproveDid(serviceId, Number.isInteger(serviceVersion) ? serviceVersion : null, policyHash);
+          const findResult = await findAutoApproveDid(
+            serviceId,
+            Number.isInteger(serviceVersion) ? serviceVersion : null,
+            policyHash,
+            requestedClaims
+          );
           targetDid = findResult.did;
           autoApprove = findResult.autoApprove;
           newClaims = findResult.newClaims || [];

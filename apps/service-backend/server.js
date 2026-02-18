@@ -74,8 +74,8 @@ function loadConfigs() {
     });
   });
 
-  // Ensure default service is there
-  if (!serviceConfigs.has(defaultServiceId)) {
+  // Seed default service only when storage is completely empty.
+  if (serviceConfigs.size === 0) {
     const defaultCfg = {
       service_id: defaultServiceId,
       client_id: CLIENT_ID,
@@ -139,6 +139,15 @@ function parseJsonArray(value) {
   } catch (_err) {
     return [];
   }
+}
+
+function areSameStringArray(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b)) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 function redisKey(suffix) {
@@ -457,6 +466,43 @@ async function postJson(url, body, serviceConfig, extraHeaders = {}) {
   return data;
 }
 
+async function upsertServiceToGateway(config) {
+  const payload = {
+    client_id: config.client_id,
+    service_id: config.service_id,
+    service_name: config.service_name,
+    client_secret: config.client_secret,
+    redirect_uris: [config.redirect_uri],
+    requested_claims: config.requested_claims,
+    default_scopes: ["profile", "email"],
+    risk_action: null
+  };
+  const registeredConfig = Array.from(serviceConfigs.values()).find((s) => s.registered && s.client_id && s.client_secret);
+  const authCandidates = [
+    registeredConfig,
+    { client_id: CLIENT_ID, client_secret: CLIENT_SECRET },
+    config
+  ].filter(Boolean);
+
+  let registered = null;
+  let lastError = null;
+  for (const authConfig of authCandidates) {
+    try {
+      registered = await postJson(`${GATEWAY_URL}/v1/services`, payload, authConfig);
+      break;
+    } catch (err) {
+      lastError = err;
+      if (!String(err?.message || "").includes("invalid_service_client_credentials")) {
+        throw err;
+      }
+    }
+  }
+  if (!registered) {
+    throw lastError || new Error("registration_failed");
+  }
+  return registered;
+}
+
 async function getJson(url, headers = {}) {
   const response = await fetch(url, { headers });
   const raw = await response.text();
@@ -655,32 +701,70 @@ app.get("/services", (req, res) => {
   res.json(Array.from(serviceConfigs.values()));
 });
 
-app.post("/service/save", (req, res) => {
-  const { service_id, service_name, requested_fields } = req.body || {};
-  if (!service_id || !requested_fields) {
-    return res.status(400).json({ error: "invalid_request", message: "service_id and requested_fields are required" });
+function createServiceConfig({ service_name, requested_claims }) {
+  const serviceId = crypto.randomUUID();
+  const redirectHost = process.env.REDIRECT_HOST || "service-test.local";
+  return {
+    service_id: serviceId,
+    client_id: serviceId, // simple 1:1 for now
+    client_secret: process.env.CLIENT_SECRET || "dev-service-secret",
+    redirect_uri: `https://${serviceId}.${redirectHost.split(".").slice(1).join(".")}/callback`,
+    requested_claims,
+    service_name: service_name || `Service ${serviceId.slice(0, 8)}`,
+    registered: false,
+    service_version: 1
+  };
+}
+
+app.post("/service/save", async (req, res) => {
+  const { original_id, service_id, service_name, requested_fields } = req.body || {};
+  if (!requested_fields) {
+    return res.status(400).json({ error: "invalid_request", message: "requested_fields is required" });
   }
 
   const claims = requested_fields.split(",").map(s => s.trim()).filter(Boolean);
-  const redirectHost = process.env.REDIRECT_HOST || "service-test.local";
-  const previous = serviceConfigs.get(service_id);
-  const config = {
-    service_id,
-    client_id: service_id, // simple 1:1 for now
-    client_secret: process.env.CLIENT_SECRET || "dev-service-secret",
-    redirect_uri: `https://${service_id}.${redirectHost.split('.').slice(1).join('.')}/callback`,
-    requested_claims: claims,
-    service_name: service_name || service_id,
-    registered: false,
-    service_version: Number.isInteger(previous?.service_version) ? previous.service_version : 1
-  };
-
-  // Special case for default-like behavior
-  if (service_id === "service-test") {
-    config.redirect_uri = REDIRECT_URI;
+  if (claims.length === 0) {
+    return res.status(400).json({ error: "invalid_request", message: "requested_fields must include at least one field" });
   }
 
-  serviceConfigs.set(service_id, config);
+  if (original_id) {
+    const previous = serviceConfigs.get(original_id);
+    if (!previous) {
+      return res.status(404).json({ error: "service_not_found" });
+    }
+    if (service_id && service_id !== original_id) {
+      return res.status(400).json({ error: "service_id_change_not_allowed" });
+    }
+
+    const nextServiceName = service_name || previous.service_name || previous.service_id;
+    const policyChanged = nextServiceName !== (previous.service_name || previous.service_id)
+      || !areSameStringArray(claims, Array.isArray(previous.requested_claims) ? previous.requested_claims : []);
+    const config = {
+      ...previous,
+      requested_claims: claims,
+      service_name: nextServiceName,
+      registered: previous.registered
+    };
+    if (policyChanged && previous.registered) {
+      try {
+        const registered = await upsertServiceToGateway(config);
+        config.registered = true;
+        config.service_version = Number(registered?.service?.service_version || config.service_version || 1);
+      } catch (err) {
+        return res.status(502).json({ error: "gateway_service_update_failed", message: err.message });
+      }
+    }
+    serviceConfigs.set(original_id, config);
+    saveConfigs();
+    return res.json({ success: true, service: config });
+  }
+
+  const config = createServiceConfig({
+    service_name,
+    requested_claims: claims
+  });
+
+  serviceConfigs.set(config.service_id, config);
   saveConfigs();
   res.json({ success: true, service: config });
 });
@@ -693,21 +777,7 @@ app.post("/service/:id/register", async (req, res) => {
   }
 
   try {
-    // Register to gateway
-    // We use any already registered service to authorize this registration call, 
-    // or use the config itself if it's the first one.
-    const authConfig = Array.from(serviceConfigs.values()).find(s => s.registered) || config;
-
-    const registered = await postJson(`${GATEWAY_URL}/v1/services`, {
-      client_id: config.client_id,
-      service_id: config.service_id,
-      service_name: config.service_name,
-      client_secret: config.client_secret,
-      redirect_uris: [config.redirect_uri],
-      requested_claims: config.requested_claims,
-      default_scopes: ["profile", "email"],
-      risk_action: null
-    }, authConfig);
+    const registered = await upsertServiceToGateway(config);
 
     config.registered = true;
     config.service_version = Number(registered?.service?.service_version || config.service_version || 1);

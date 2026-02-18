@@ -183,21 +183,26 @@
         font-size: 15px;
         font-weight: 700;
         color: #1e293b;
-        display: flex;
-        align-items: center;
-        gap: 8px;
+        display: block;
+        position: relative;
+        padding-left: 22px;
         min-width: 0;
       }
       
       .service-name::before {
         content: "🔗";
         font-size: 14px;
+        position: absolute;
+        left: 0;
+        top: 1px;
       }
 
       .service-name-id {
+        display: block;
         font-size: 12px;
         font-weight: 500;
         color: #64748b;
+        margin-top: 2px;
       }
       
       /* Claims */
