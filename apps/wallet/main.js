@@ -70,6 +70,7 @@ let primaryDid = process.env.WALLET_DID || null;
 let claimPolicies = {};
 let approvalStates = {};
 const recentChallengeEvents = new Map();
+const walletApiTokens = new Map();
 
 function cryptoRandomSecret() {
   return require("crypto").randomBytes(24).toString("hex");
@@ -264,6 +265,66 @@ async function fetchJson(url, options = {}) {
   return body;
 }
 
+function getCachedWalletApiToken(did) {
+  const cached = walletApiTokens.get(did);
+  if (!cached || !cached.token || !cached.expiresAt) {
+    return null;
+  }
+  const expMs = new Date(cached.expiresAt).getTime();
+  if (!Number.isFinite(expMs) || expMs <= (Date.now() + 5000)) {
+    walletApiTokens.delete(did);
+    return null;
+  }
+  return cached.token;
+}
+
+async function getWalletApiToken(did) {
+  const cached = getCachedWalletApiToken(did);
+  if (cached) {
+    return cached;
+  }
+  const token = await issueWalletEventsConnectionToken(did);
+  const payload = token.split(".")[0];
+  let expiresAt = new Date(Date.now() + 60000).toISOString();
+  try {
+    const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (decoded?.exp) {
+      expiresAt = new Date(Number(decoded.exp) * 1000).toISOString();
+    }
+  } catch (_err) {
+    // fallback ttl
+  }
+  walletApiTokens.set(did, { token, expiresAt });
+  return token;
+}
+
+async function signWalletGatewayAction(did, action, targetId) {
+  const proof = {
+    challenge_id: `wallet-action:${action}:${targetId}`,
+    nonce: cryptoRandomSecret().slice(0, 24),
+    audience: "wallet_gateway",
+    expires_at: new Date(Date.now() + 60000).toISOString()
+  };
+  const sign = await fetchJson(`${WALLET_URL}/v1/wallets/sign`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-wallet-sign-secret": walletSignSecret
+    },
+    body: JSON.stringify({
+      did,
+      challenge_id: proof.challenge_id,
+      nonce: proof.nonce,
+      audience: proof.audience,
+      service_id: action,
+      requested_claims: [],
+      approved_claims: [],
+      expires_at: proof.expires_at
+    })
+  });
+  return { proof, signature: sign.signature };
+}
+
 async function listWallets() {
   const data = await fetchJson(`${WALLET_URL}/v1/wallets`);
   return Array.isArray(data.wallets) ? data.wallets : [];
@@ -312,7 +373,10 @@ function parseScope(scopeText) {
 }
 
 async function getChallengesForDid(did) {
-  const data = await fetchJson(`${GATEWAY_URL}/v1/wallet/challenges?did=${encodeURIComponent(did)}`);
+  const token = await getWalletApiToken(did);
+  const data = await fetchJson(`${GATEWAY_URL}/v1/wallet/challenges?did=${encodeURIComponent(did)}`, {
+    headers: { "x-wallet-token": token }
+  });
   const challenges = Array.isArray(data.challenges) ? data.challenges : [];
   return challenges.map((challenge) => ({
     ...challenge,
@@ -321,7 +385,10 @@ async function getChallengesForDid(did) {
 }
 
 async function getActiveServicesForDid(did) {
-  const data = await fetchJson(`${GATEWAY_URL}/v1/wallet/sessions?did=${encodeURIComponent(did)}`);
+  const token = await getWalletApiToken(did);
+  const data = await fetchJson(`${GATEWAY_URL}/v1/wallet/sessions?did=${encodeURIComponent(did)}`, {
+    headers: { "x-wallet-token": token }
+  });
   const activeServiceRows = Array.isArray(data.active_services)
     ? data.active_services
     : (Array.isArray(data.sessions) ? data.sessions : []);
@@ -332,7 +399,10 @@ async function getActiveServicesForDid(did) {
 }
 
 async function getApprovedForDid(did) {
-  const data = await fetchJson(`${GATEWAY_URL}/v1/wallet/approved?did=${encodeURIComponent(did)}`);
+  const token = await getWalletApiToken(did);
+  const data = await fetchJson(`${GATEWAY_URL}/v1/wallet/approved?did=${encodeURIComponent(did)}`, {
+    headers: { "x-wallet-token": token }
+  });
   return Array.isArray(data.approved) ? data.approved : [];
 }
 
@@ -1011,11 +1081,16 @@ ipcMain.handle("approved:list", async () => {
 ipcMain.handle("approved:cancel", async (_event, payload) => {
   const authorizationCode = typeof payload === "string" ? payload : payload?.authorizationCode;
   const did = payload?.did || primaryDid;
+  const token = await getWalletApiToken(did);
+  const { proof, signature } = await signWalletGatewayAction(did, "cancel_approved", authorizationCode);
   dlog(`approved cancel code=${authorizationCode}`);
   return fetchJson(`${GATEWAY_URL}/v1/wallet/approved/${encodeURIComponent(authorizationCode)}`, {
     method: "DELETE",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ did })
+    headers: {
+      "content-type": "application/json",
+      "x-wallet-token": token
+    },
+    body: JSON.stringify({ did, signature, proof, wallet_url: WALLET_URL })
   });
 });
 
@@ -1045,10 +1120,15 @@ async function disconnectActiveService(payload) {
   }
   dlog(`active service disconnect id=${activeServiceId} did=${did}`);
   try {
+    const token = await getWalletApiToken(did);
+    const { proof, signature } = await signWalletGatewayAction(did, "revoke_session", activeServiceId);
     const result = await fetchJson(`${GATEWAY_URL}/v1/wallet/sessions/${encodeURIComponent(activeServiceId)}`, {
       method: "DELETE",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ did })
+      headers: {
+        "content-type": "application/json",
+        "x-wallet-token": token
+      },
+      body: JSON.stringify({ did, signature, proof, wallet_url: WALLET_URL })
     });
     if (did && serviceId) {
       clearApprovalState(did, serviceId);
@@ -1106,11 +1186,16 @@ ipcMain.handle("challenge:approve", async (_event, payload) => {
 ipcMain.handle("challenge:deny", async (_event, payload) => {
   const challengeId = typeof payload === "string" ? payload : payload?.challengeId;
   const did = payload?.did || primaryDid;
+  const token = await getWalletApiToken(did);
+  const { proof, signature } = await signWalletGatewayAction(did, "deny_challenge", challengeId);
   dlog(`deny requested challenge=${challengeId} did=${did}`);
   return fetchJson(`${GATEWAY_URL}/v1/wallet/challenges/${challengeId}/deny`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ did })
+    headers: {
+      "content-type": "application/json",
+      "x-wallet-token": token
+    },
+    body: JSON.stringify({ did, signature, proof, wallet_url: WALLET_URL })
   });
 });
 

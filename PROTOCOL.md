@@ -934,6 +934,7 @@ DID의 pending challenge 목록을 조회합니다.
 **Request**
 ```http
 GET /v1/wallet/challenges?did={did} HTTP/1.1
+X-Wallet-Token: {connection_token}
 ```
 
 **Response (200 OK)**
@@ -1022,9 +1023,18 @@ Challenge를 거부합니다.
 ```http
 POST /v1/wallet/challenges/{challengeId}/deny HTTP/1.1
 Content-Type: application/json
+X-Wallet-Token: {connection_token}
 
 {
-  "did": "did:key:z6MksXxxExampleDidKey"
+  "did": "did:key:z6MksXxxExampleDidKey",
+  "signature": "base64url_ed25519_signature",
+  "proof": {
+    "challenge_id": "wallet-action:deny_challenge:{challengeId}",
+    "nonce": "...",
+    "audience": "wallet_gateway",
+    "expires_at": "..."
+  },
+  "wallet_url": "http://localhost:17000"
 }
 ```
 
@@ -1046,6 +1056,7 @@ DID의 활성 서비스(Active Services) 목록을 조회합니다.
 **Request**
 ```http
 GET /v1/wallet/sessions?did={did} HTTP/1.1
+X-Wallet-Token: {connection_token}
 ```
 
 {
@@ -1080,9 +1091,18 @@ GET /v1/wallet/sessions?did={did} HTTP/1.1
 ```http
 DELETE /v1/wallet/sessions/{sessionId} HTTP/1.1
 Content-Type: application/json
+X-Wallet-Token: {connection_token}
 
 {
-  "did": "did:key:z6MksXxxExampleDidKey"
+  "did": "did:key:z6MksXxxExampleDidKey",
+  "signature": "base64url_ed25519_signature",
+  "proof": {
+    "challenge_id": "wallet-action:revoke_session:{sessionId}",
+    "nonce": "...",
+    "audience": "wallet_gateway",
+    "expires_at": "..."
+  },
+  "wallet_url": "http://localhost:17000"
 }
 ```
 
@@ -1104,6 +1124,7 @@ DID의 승인 완료 대기 중인 authorization code 목록을 조회합니다.
 **Request**
 ```http
 GET /v1/wallet/approved?did={did} HTTP/1.1
+X-Wallet-Token: {connection_token}
 ```
 
 **Response (200 OK)**
@@ -1137,9 +1158,18 @@ GET /v1/wallet/approved?did={did} HTTP/1.1
 ```http
 DELETE /v1/wallet/approved/{authCode} HTTP/1.1
 Content-Type: application/json
+X-Wallet-Token: {connection_token}
 
 {
-  "did": "did:key:z6MksXxxExampleDidKey"
+  "did": "did:key:z6MksXxxExampleDidKey",
+  "signature": "base64url_ed25519_signature",
+  "proof": {
+    "challenge_id": "wallet-action:cancel_approved:{authCode}",
+    "nonce": "...",
+    "audience": "wallet_gateway",
+    "expires_at": "..."
+  },
+  "wallet_url": "http://localhost:17000"
 }
 ```
 

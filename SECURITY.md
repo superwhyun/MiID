@@ -102,9 +102,13 @@ app.get("/v1/wallet/events", (req, res) => {
 
 ---
 
-#### 2.2.2 Wallet REST 조회 엔드포인트 인증 부재 (🔶 미해결)
+#### 2.2.2 Wallet REST 조회 엔드포인트 인증 부재 (✅ 해결 완료 - 2026-02-18)
 
-**위치**: `apps/gateway/server.js:1024-1094`
+**현재 상태**:
+- `/v1/wallet/challenges`, `/v1/wallet/sessions`, `/v1/wallet/approved`는 `connection_token` 검증이 필수입니다.
+- `did`와 `token`이 바인딩 검증되어, DID 문자열만으로 조회가 불가능합니다.
+
+**위치**: `apps/gateway/server.js:242-264`, `apps/gateway/server.js:1091-1147`
 
 **취약점 설명**:
 Wallet 관련 REST 조회 엔드포인트들이 DID만으로 조회 가능하며, DID 소유권 증명이 없습니다.
@@ -155,9 +159,14 @@ app.get("/v1/wallet/approved", requireWalletAuth, (req, res) => { ... });
 
 ---
 
-#### 2.2.3 세션/승인 취소 시 DID 소유권 증명 부재 (🔶 미해결)
+#### 2.2.3 세션/승인 취소 시 DID 소유권 증명 부재 (✅ 해결 완료 - 2026-02-18)
 
-**위치**: `apps/gateway/server.js:1096-1185`
+**현재 상태**:
+- `DELETE /v1/wallet/approved/:authCode`, `DELETE /v1/wallet/sessions/:sessionId` 요청은
+  DID 바인딩된 `connection_token` + DID 서명 proof를 모두 요구합니다.
+- proof payload는 `action`, `targetId`, `nonce`, `expires_at` 컨텍스트를 포함해 검증됩니다.
+
+**위치**: `apps/gateway/server.js:266-313`, `apps/gateway/server.js:1149-1236`
 
 **취약점 설명**:
 세션 revoke 및 승인 취소 시 body에 DID 문자열만 제공하면 되며, 암호학적 소유권 증명이 없습니다.
@@ -209,9 +218,13 @@ app.delete("/v1/wallet/sessions/:sessionId", async (req, res) => {
 
 ---
 
-#### 2.2.4 Challenge Deny 인증 부재 (🔶 미해결)
+#### 2.2.4 Challenge Deny 인증 부재 (✅ 해결 완료 - 2026-02-18)
 
-**위치**: `apps/gateway/server.js:1288-1317`
+**현재 상태**:
+- `POST /v1/wallet/challenges/:challengeId/deny`는 DID 바인딩 `connection_token`과 DID 서명 proof를 요구합니다.
+- approve/deny 모두 소유권 검증을 수행하도록 대칭 보호가 적용되었습니다.
+
+**위치**: `apps/gateway/server.js:266-313`, `apps/gateway/server.js:1344-1392`
 
 **취약점 설명**:
 Challenge 거부(deny) 시 서명 검증이 없습니다. `did_hint`가 없는 challenge는 아무나 거부 가능합니다.
@@ -418,18 +431,18 @@ SSE 연결 끊김 시 이벤트 유실 가능. 이벤트 ID/재전송 메커니�
 
 ### 3.2 Wallet 엔드포인트 통합 인증
 
-SSE 연결에는 `connection_token`이 적용되었으나, REST 엔드포인트에는 미적용.
+SSE와 Wallet REST 엔드포인트 모두 `connection_token` 기반 인증이 적용되었습니다.
 
 ```
 현재 상태:
   /v1/wallet/events       → ✅ connection_token 필수
-  /v1/wallet/challenges   → ❌ 인증 없음
-  /v1/wallet/sessions     → ❌ 인증 없음
-  /v1/wallet/approved     → ❌ 인증 없음
-  DELETE /v1/wallet/*     → ❌ 서명 검증 없음
+  /v1/wallet/challenges   → ✅ connection_token 필수
+  /v1/wallet/sessions     → ✅ connection_token 필수
+  /v1/wallet/approved     → ✅ connection_token 필수
+  DELETE /v1/wallet/*     → ✅ connection_token + 서명 검증
 
 권장:
-  모든 /v1/wallet/* 엔드포인트에 connection_token 또는 서명 기반 인증 적용
+  모든 /v1/wallet/* 엔드포인트에서 현재 인증 규칙을 유지
 ```
 
 ### 3.3 상태 변경 작업 서명 요구
@@ -470,9 +483,9 @@ POST /v1/wallet/challenges/:id/deny → signature 검증
 | ~~P0~~ | Wallet SSE 인증 부재 | 정보 유출 | ✅ 해결 |
 | ~~P1~~ | 서명 페이로드 바인딩 | Scope 혼동 | ✅ 해결 |
 | ~~P1~~ | Authorization Code Replay | 중복 교환 | ✅ 해결 |
-| **P2** | Wallet REST 조회 인증 부재 | 프라이버시 침해 | 🔶 미해결 |
-| **P2** | 세션/승인 취소 소유권 증명 | DoS 공격 | 🔶 미해결 |
-| **P2** | Challenge Deny 인증 부재 | DoS 공격 | 🔶 미해결 |
+| ~~P2~~ | Wallet REST 조회 인증 부재 | 프라이버시 침해 | ✅ 해결 |
+| ~~P2~~ | 세션/승인 취소 소유권 증명 | DoS 공격 | ✅ 해결 |
+| ~~P2~~ | Challenge Deny 인증 부재 | DoS 공격 | ✅ 해결 |
 | **P3** | wallet_url SSRF | 내부 네트워크 노출 | 🔶 하드닝 권장 |
 | **P3** | Challenge Broadcast 정보 노출 | 정보 노출 | 🔶 설계 검토 |
 | **P3** | Sign Secret 내부 신뢰 | 로컬 공격면 | 🔶 하드닝 권장 |
@@ -487,9 +500,9 @@ POST /v1/wallet/challenges/:id/deny → signature 검증
 - [x] Authorization Code 원자적 처리
 
 **Phase 2 - 강화 (진행 필요)**
-- [ ] Wallet REST 엔드포인트 인증 추가 (`/v1/wallet/challenges`, `/v1/wallet/sessions`, `/v1/wallet/approved`)
-- [ ] 상태 변경 작업 서명 요구 (DELETE 엔드포인트)
-- [ ] Challenge Deny 인증 추가
+- [x] Wallet REST 엔드포인트 인증 추가 (`/v1/wallet/challenges`, `/v1/wallet/sessions`, `/v1/wallet/approved`)
+- [x] 상태 변경 작업 서명 요구 (DELETE 엔드포인트)
+- [x] Challenge Deny 인증 추가
 - [ ] SSE 이벤트 ID 및 재전송 메커니즘
 - [ ] 감사 로깅 체계 구축
 

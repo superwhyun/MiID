@@ -204,6 +204,78 @@ function verifyWalletEventsConnectionToken(token, did) {
   }
 }
 
+function getWalletConnectionTokenFromRequest(req) {
+  const auth = req.headers.authorization;
+  if (typeof auth === "string" && auth.startsWith("Bearer ")) {
+    return auth.slice("Bearer ".length).trim();
+  }
+  return req.headers["x-wallet-token"] || req.query?.token || null;
+}
+
+function extractDidFromWalletRequest(req) {
+  return req.query?.did || req.body?.did || null;
+}
+
+function requireWalletReadAuth(req, res) {
+  const did = extractDidFromWalletRequest(req);
+  if (!did) {
+    res.status(400).json({ error: "did_required" });
+    return null;
+  }
+  const token = getWalletConnectionTokenFromRequest(req);
+  if (!token) {
+    res.status(401).json({ error: "connection_token_required" });
+    return null;
+  }
+  try {
+    verifyWalletEventsConnectionToken(token, did);
+  } catch (err) {
+    res.status(401).json({ error: err.message || "invalid_connection_token" });
+    return null;
+  }
+  return did;
+}
+
+async function verifyWalletActionSignature({ did, signature, proof, action, targetId, walletUrl }) {
+  if (!did || !signature || !proof || typeof proof !== "object") {
+    throw new Error("invalid_request");
+  }
+  const nonce = proof.nonce;
+  const audience = proof.audience;
+  const expiresAt = proof.expires_at;
+  const expectedChallengeId = `wallet-action:${action}:${targetId}`;
+  if (
+    typeof proof.challenge_id !== "string" ||
+    proof.challenge_id !== expectedChallengeId ||
+    !nonce ||
+    !audience ||
+    !expiresAt
+  ) {
+    throw new Error("invalid_proof_payload");
+  }
+  if (audience !== "wallet_gateway") {
+    throw new Error("invalid_proof_audience");
+  }
+  const proofExpiry = new Date(expiresAt).getTime();
+  if (!Number.isFinite(proofExpiry) || proofExpiry <= Date.now()) {
+    throw new Error("proof_expired");
+  }
+  const resolved = await resolveDidDocument({ did, walletUrl });
+  const payload = toPayloadString({
+    challenge_id: proof.challenge_id,
+    nonce,
+    audience,
+    service_id: action,
+    requested_claims: [],
+    approved_claims: [],
+    expires_at: expiresAt
+  });
+  const ok = verifyWithDidDocument(resolved.didDocument, payload, signature);
+  if (!ok) {
+    throw new Error("invalid_signature");
+  }
+}
+
 function parseScopeText(scopeText) {
   if (!scopeText || typeof scopeText !== "string") {
     return [];
@@ -1022,9 +1094,9 @@ app.get("/v1/auth/challenges/:challengeId/status", (req, res) => {
 });
 
 app.get("/v1/wallet/challenges", (req, res) => {
-  const did = req.query.did;
+  const did = requireWalletReadAuth(req, res);
   if (!did) {
-    return res.status(400).json({ error: "did_required" });
+    return;
   }
 
   const challenges = store.findPendingChallenges(did);
@@ -1047,9 +1119,9 @@ app.get("/v1/wallet/challenges", (req, res) => {
 });
 
 app.get("/v1/wallet/sessions", (req, res) => {
-  const did = req.query.did;
+  const did = requireWalletReadAuth(req, res);
   if (!did) {
-    return res.status(400).json({ error: "did_required" });
+    return;
   }
 
   const sessions = store.findSessionsByDid(did);
@@ -1070,9 +1142,9 @@ app.get("/v1/wallet/sessions", (req, res) => {
 });
 
 app.get("/v1/wallet/approved", (req, res) => {
-  const did = req.query.did;
+  const did = requireWalletReadAuth(req, res);
   if (!did) {
-    return res.status(400).json({ error: "did_required" });
+    return;
   }
 
   const authCodes = store.findApprovedAuthCodes(did);
@@ -1093,10 +1165,23 @@ app.get("/v1/wallet/approved", (req, res) => {
   return res.json({ did, approved });
 });
 
-app.delete("/v1/wallet/approved/:authCode", (req, res) => {
-  const { did } = req.body || {};
+app.delete("/v1/wallet/approved/:authCode", async (req, res) => {
+  const did = requireWalletReadAuth(req, res);
   if (!did) {
-    return res.status(400).json({ error: "did_required" });
+    return;
+  }
+  const { signature, proof, wallet_url } = req.body || {};
+  try {
+    await verifyWalletActionSignature({
+      did,
+      signature,
+      proof,
+      action: "cancel_approved",
+      targetId: req.params.authCode,
+      walletUrl: wallet_url
+    });
+  } catch (err) {
+    return res.status(401).json({ error: err.message || "invalid_signature" });
   }
 
   const authCode = store.findAuthCodeByCode(req.params.authCode);
@@ -1145,10 +1230,23 @@ app.delete("/v1/wallet/approved/:authCode", (req, res) => {
   });
 });
 
-app.delete("/v1/wallet/sessions/:sessionId", (req, res) => {
-  const { did } = req.body || {};
+app.delete("/v1/wallet/sessions/:sessionId", async (req, res) => {
+  const did = requireWalletReadAuth(req, res);
   if (!did) {
-    return res.status(400).json({ error: "did_required" });
+    return;
+  }
+  const { signature, proof, wallet_url } = req.body || {};
+  try {
+    await verifyWalletActionSignature({
+      did,
+      signature,
+      proof,
+      action: "revoke_session",
+      targetId: req.params.sessionId,
+      walletUrl: wallet_url
+    });
+  } catch (err) {
+    return res.status(401).json({ error: err.message || "invalid_signature" });
   }
 
   const session = store.findSessionById(req.params.sessionId);
@@ -1285,10 +1383,23 @@ app.post("/v1/wallet/challenges/:challengeId/approve", async (req, res) => {
   }
 });
 
-app.post("/v1/wallet/challenges/:challengeId/deny", (req, res) => {
-  const { did } = req.body || {};
+app.post("/v1/wallet/challenges/:challengeId/deny", async (req, res) => {
+  const did = requireWalletReadAuth(req, res);
   if (!did) {
-    return res.status(400).json({ error: "invalid_request" });
+    return;
+  }
+  const { signature, proof, wallet_url } = req.body || {};
+  try {
+    await verifyWalletActionSignature({
+      did,
+      signature,
+      proof,
+      action: "deny_challenge",
+      targetId: req.params.challengeId,
+      walletUrl: wallet_url
+    });
+  } catch (err) {
+    return res.status(401).json({ error: err.message || "invalid_signature" });
   }
 
   const challenge = store.findChallengeById(req.params.challengeId);

@@ -126,6 +126,58 @@ async function signChallenge(
   return result.data;
 }
 
+async function issueWalletToken(did) {
+  const proof = {
+    challenge_id: `wallet-events:test:${Date.now()}`,
+    nonce: `n_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`,
+    audience: 'wallet_events',
+    expires_at: new Date(Date.now() + 60000).toISOString()
+  };
+  const sign = await signChallenge(
+    did,
+    proof.challenge_id,
+    proof.nonce,
+    proof.audience,
+    proof.expires_at,
+    {
+      serviceId: 'wallet_events',
+      requestedClaims: [],
+      approvedClaims: []
+    }
+  );
+  const result = await httpPost(`${GATEWAY_URL}/v1/wallet/events/token`, {
+    did,
+    signature: sign.signature,
+    proof
+  });
+  if (result.status !== 200 || !result.data?.connection_token) {
+    throw new Error(`Failed to issue wallet token: ${JSON.stringify(result.data)}`);
+  }
+  return result.data.connection_token;
+}
+
+async function signWalletAction(did, action, targetId) {
+  const proof = {
+    challenge_id: `wallet-action:${action}:${targetId}`,
+    nonce: `n_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`,
+    audience: 'wallet_gateway',
+    expires_at: new Date(Date.now() + 60000).toISOString()
+  };
+  const sign = await signChallenge(
+    did,
+    proof.challenge_id,
+    proof.nonce,
+    proof.audience,
+    proof.expires_at,
+    {
+      serviceId: action,
+      requestedClaims: [],
+      approvedClaims: []
+    }
+  );
+  return { proof, signature: sign.signature };
+}
+
 async function createChallenge(options = {}) {
   const {
     serviceId = DEFAULT_SERVICE_ID,
@@ -165,7 +217,16 @@ async function approveChallenge(challengeId, did, signature) {
 }
 
 async function denyChallenge(challengeId, did) {
-  return await httpPost(`${GATEWAY_URL}/v1/wallet/challenges/${challengeId}/deny`, { did });
+  const token = await issueWalletToken(did);
+  const { proof, signature } = await signWalletAction(did, 'deny_challenge', challengeId);
+  return await httpPost(`${GATEWAY_URL}/v1/wallet/challenges/${challengeId}/deny`, {
+    did,
+    signature,
+    proof,
+    wallet_url: WALLET_URL
+  }, {
+    'X-Wallet-Token': token
+  });
 }
 
 async function exchangeToken(code, clientId = DEFAULT_CLIENT_ID, redirectUri = DEFAULT_REDIRECT_URI) {
@@ -178,11 +239,23 @@ async function exchangeToken(code, clientId = DEFAULT_CLIENT_ID, redirectUri = D
 }
 
 async function getWalletSessions(did) {
-  return await httpGet(`${GATEWAY_URL}/v1/wallet/sessions?did=${encodeURIComponent(did)}`);
+  const token = await issueWalletToken(did);
+  return await httpGet(`${GATEWAY_URL}/v1/wallet/sessions?did=${encodeURIComponent(did)}`, {
+    'X-Wallet-Token': token
+  });
 }
 
 async function revokeSession(sessionId, did) {
-  return await httpDelete(`${GATEWAY_URL}/v1/wallet/sessions/${sessionId}`, { did });
+  const token = await issueWalletToken(did);
+  const { proof, signature } = await signWalletAction(did, 'revoke_session', sessionId);
+  return await httpDelete(`${GATEWAY_URL}/v1/wallet/sessions/${sessionId}`, {
+    did,
+    signature,
+    proof,
+    wallet_url: WALLET_URL
+  }, {
+    'X-Wallet-Token': token
+  });
 }
 
 async function getServiceProfile(serviceId, accessToken) {
@@ -250,5 +323,6 @@ module.exports = {
   httpGet, httpPost, httpDelete,
   createWallet, signChallenge, createChallenge, getChallengeStatus,
   approveChallenge, denyChallenge, exchangeToken, getWalletSessions, revokeSession, getServiceProfile,
+  issueWalletToken, signWalletAction,
   runTest, sleep, checkServerHealth, waitForServers
 };
