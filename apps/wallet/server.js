@@ -50,8 +50,55 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function buildDid(walletId) {
-  return `did:miid:${walletId}`;
+const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+function base58btcEncode(buffer) {
+  if (!buffer || buffer.length === 0) {
+    return "";
+  }
+  let digits = [0];
+  for (const byte of buffer) {
+    let carry = byte;
+    for (let i = 0; i < digits.length; i += 1) {
+      const value = digits[i] * 256 + carry;
+      digits[i] = value % 58;
+      carry = Math.floor(value / 58);
+    }
+    while (carry > 0) {
+      digits.push(carry % 58);
+      carry = Math.floor(carry / 58);
+    }
+  }
+  let encoded = "";
+  for (let i = 0; i < buffer.length && buffer[i] === 0; i += 1) {
+    encoded += "1";
+  }
+  for (let i = digits.length - 1; i >= 0; i -= 1) {
+    encoded += BASE58_ALPHABET[digits[i]];
+  }
+  return encoded;
+}
+
+function buildDidFromPublicKey(publicKeyPem) {
+  const publicKey = crypto.createPublicKey(publicKeyPem);
+  const jwk = publicKey.export({ format: "jwk" });
+  if (!jwk || jwk.kty !== "OKP" || jwk.crv !== "Ed25519" || !jwk.x) {
+    throw new Error("unsupported_public_key_for_did_key");
+  }
+  const keyBytes = Buffer.from(jwk.x, "base64url");
+  const prefixed = Buffer.concat([Buffer.from([0xed, 0x01]), keyBytes]);
+  const fingerprint = `z${base58btcEncode(prefixed)}`;
+  return `did:key:${fingerprint}`;
+}
+
+function buildKidFromDid(did) {
+  if (typeof did === "string" && did.startsWith("did:key:")) {
+    const fingerprint = did.split(":")[2];
+    if (fingerprint) {
+      return `${did}#${fingerprint}`;
+    }
+  }
+  return `${did}#key-1`;
 }
 
 function normalizeText(value) {
@@ -113,6 +160,11 @@ function migrateWallet(wallet) {
     }
   });
 
+  if (!wallet.did || wallet.did.startsWith("did:miid:")) {
+    wallet.did = buildDidFromPublicKey(wallet.public_key_pem);
+    changed = true;
+  }
+
   return { wallet, changed };
 }
 
@@ -156,7 +208,7 @@ function createWalletApp() {
       private_key_pem: privateKeyPem,
       created_at: nowIso()
     };
-    wallet.did = buildDid(wallet.id);
+    wallet.did = buildDidFromPublicKey(wallet.public_key_pem);
     store.wallets.push(wallet);
     writeStore(store);
     dlog(`wallet created did=${wallet.did}`);
@@ -215,7 +267,7 @@ function createWalletApp() {
     return res.json({
       wallet_id: wallet.id,
       did: wallet.did,
-      kid: `${wallet.did}#key-1`,
+      kid: buildKidFromDid(wallet.did),
       public_key_pem: wallet.public_key_pem,
       profile: wallet.profile
     });
@@ -309,7 +361,7 @@ function createWalletApp() {
     dlog(`sign ok did=${did} challenge_id=${challenge_id}`);
     return res.json({
       did,
-      kid: `${wallet.did}#key-1`,
+      kid: buildKidFromDid(wallet.did),
       signature,
       signed_payload: JSON.parse(payload)
     });

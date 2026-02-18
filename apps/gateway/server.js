@@ -241,17 +241,59 @@ function normalizeWalletProfile(wallet) {
   };
 }
 
-async function fetchWalletByDid(walletUrl, did) {
-  const res = await fetch(`${walletUrl}/v1/wallets/by-did/${encodeURIComponent(did)}`);
-  if (!res.ok) {
-    throw new Error(`wallet did lookup failed: ${res.status}`);
+const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+const BASE58_MAP = new Map(BASE58_ALPHABET.split("").map((ch, idx) => [ch, idx]));
+
+function base58btcDecode(text) {
+  if (!text || typeof text !== "string") {
+    throw new Error("invalid_base58_input");
   }
-  return res.json();
+  const bytes = [0];
+  for (const ch of text) {
+    const value = BASE58_MAP.get(ch);
+    if (value === undefined) {
+      throw new Error("invalid_base58_character");
+    }
+    let carry = value;
+    for (let i = 0; i < bytes.length; i += 1) {
+      const next = bytes[i] * 58 + carry;
+      bytes[i] = next & 0xff;
+      carry = next >> 8;
+    }
+    while (carry > 0) {
+      bytes.push(carry & 0xff);
+      carry >>= 8;
+    }
+  }
+  for (let i = 0; i < text.length && text[i] === "1"; i += 1) {
+    bytes.push(0);
+  }
+  return Buffer.from(bytes.reverse());
 }
 
-function buildDidDocumentFromWalletRecord(wallet) {
-  const did = wallet.did;
-  const keyId = wallet.kid || `${did}#key-1`;
+function buildDidDocumentFromDidKey(did) {
+  const parts = String(did || "").split(":");
+  const fingerprint = parts[2];
+  if (parts.length !== 3 || !fingerprint || fingerprint[0] !== "z") {
+    throw new Error("invalid_did_key_format");
+  }
+  const decoded = base58btcDecode(fingerprint.slice(1));
+  if (decoded.length < 3 || decoded[0] !== 0xed || decoded[1] !== 0x01) {
+    throw new Error("unsupported_did_key_multicodec");
+  }
+  const publicKeyBytes = decoded.subarray(2);
+  if (publicKeyBytes.length !== 32) {
+    throw new Error("invalid_did_key_length");
+  }
+  const publicKey = crypto.createPublicKey({
+    key: {
+      kty: "OKP",
+      crv: "Ed25519",
+      x: publicKeyBytes.toString("base64url")
+    },
+    format: "jwk"
+  });
+  const keyId = `${did}#${fingerprint}`;
   return {
     id: did,
     verificationMethod: [
@@ -259,11 +301,19 @@ function buildDidDocumentFromWalletRecord(wallet) {
         id: keyId,
         type: "Ed25519VerificationKey2020",
         controller: did,
-        publicKeyPem: wallet.public_key_pem
+        publicKeyPem: publicKey.export({ type: "spki", format: "pem" })
       }
     ],
     authentication: [keyId]
   };
+}
+
+async function fetchWalletByDid(walletUrl, did) {
+  const res = await fetch(`${walletUrl}/v1/wallets/by-did/${encodeURIComponent(did)}`);
+  if (!res.ok) {
+    throw new Error(`wallet did lookup failed: ${res.status}`);
+  }
+  return res.json();
 }
 
 function resolveVerificationMethod(didDocument, kidHint = null) {
@@ -307,13 +357,17 @@ async function resolveDidDocument({ did, walletUrl }) {
   if (!did || typeof did !== "string") {
     throw new Error("did_required");
   }
-  if (did.startsWith("did:miid:")) {
-    if (!walletUrl) {
-      throw new Error("wallet_url_required_for_did_miid");
+  if (did.startsWith("did:key:")) {
+    let wallet = null;
+    if (walletUrl) {
+      try {
+        wallet = await fetchWalletByDid(walletUrl, did);
+      } catch (err) {
+        dlog(`wallet profile lookup failed did=${did} url=${walletUrl}: ${err.message}`);
+      }
     }
-    const wallet = await fetchWalletByDid(walletUrl, did);
     return {
-      didDocument: buildDidDocumentFromWalletRecord(wallet),
+      didDocument: buildDidDocumentFromDidKey(did),
       wallet
     };
   }
@@ -828,7 +882,7 @@ app.post("/v1/wallet/notify-reuse", (req, res) => {
 app.post("/v1/auth/verify", async (req, res) => {
   try {
     const { challenge_id, did, signature, wallet_url } = req.body || {};
-    if (!challenge_id || !did || !signature || !wallet_url) {
+    if (!challenge_id || !did || !signature) {
       return res.status(400).json({ error: "invalid_request" });
     }
 
@@ -1074,7 +1128,7 @@ app.delete("/v1/wallet/sessions/:sessionId", (req, res) => {
 app.post("/v1/wallet/challenges/:challengeId/approve", async (req, res) => {
   try {
     const { did, signature, wallet_url, approved_claims } = req.body || {};
-    if (!did || !signature || !wallet_url) {
+    if (!did || !signature) {
       return res.status(400).json({ error: "invalid_request" });
     }
 

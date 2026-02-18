@@ -499,7 +499,7 @@ async function shouldAutoApproveChallenge(serviceId, serviceVersion, policyHash,
   const hashMatched = Boolean(policyHash && approvalState.policy_hash && approvalState.policy_hash === policyHash);
   const policyMatched = Number.isInteger(serviceVersion) ? versionMatched : hashMatched;
   return {
-    autoApprove: newClaims.length === 0 && policyMatched,
+    autoApprove: policyMatched,
     newClaims,
     existingApproved: approvedClaims
   };

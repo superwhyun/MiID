@@ -66,7 +66,7 @@ POST /api/auth/start HTTP/1.1
 Content-Type: application/json
 
 {
-  "did": "did:miid:xxx"  // optional, DID hint
+  "did": "did:key:z6MksXxxExampleDidKey"  // optional, DID hint
 }
 ```
 
@@ -143,7 +143,7 @@ Wallet 승인 완료 (아직 토큰 교환 전)
     "session_id": "sid_xxx",
     "profile": {
       "subject_id": "sub_xxx",
-      "did": "did:miid:xxx",
+      "did": "did:key:z6MksXxxExampleDidKey",
       "name": "홍길동",
       "email": "user@example.com",
       "nickname": "길동"
@@ -234,7 +234,7 @@ Set-Cookie: sid=sid_xxx; HttpOnly; SameSite=Lax; Max-Age=3600; Path=/
   "session_id": "sid_xxx",
   "profile": {
     "subject_id": "sub_xxx",
-    "did": "did:miid:xxx",
+    "did": "did:key:z6MksXxxExampleDidKey",
     "name": "홍길동",
     "email": "user@example.com",
     "nickname": "길동"
@@ -265,7 +265,7 @@ Cookie: sid=sid_xxx
 ```json
 {
   "subject_id": "sub_xxx",
-  "did": "did:miid:xxx",
+  "did": "did:key:z6MksXxxExampleDidKey",
   "service_id": "service-test",
   "scope": "profile email",
   "requested_claims": ["name", "email", "nickname"],
@@ -466,7 +466,7 @@ X-Local-Wallet-Ready: 1
   "requested_claims": ["name", "email", "nickname"],
   "state": "optional_state_string",
   "risk_action": null,
-  "did_hint": "did:miid:xxx",
+  "did_hint": "did:key:z6MksXxxExampleDidKey",
   "require_user_approval": true
 }
 ```
@@ -523,7 +523,7 @@ X-Local-Wallet-Ready: 1
   "scopes": ["profile", "email"],
   "requested_claims": ["name", "email", "nickname"],
   "service_version": 1,
-  "did_hint": "did:miid:xxx",
+  "did_hint": "did:key:z6MksXxxExampleDidKey",
   "require_user_approval": true
 }
 ```
@@ -539,7 +539,7 @@ data: {
   "payload": {
     "challenge_id": "uuid",
     "service_id": "my-service",
-    "did_hint": "did:miid:xxx",
+    "did_hint": "did:key:z6MksXxxExampleDidKey",
     "scopes": ["profile", "email"],
     "service_version": 1,
     "requested_claims": ["name", "email", "nickname"],
@@ -638,7 +638,7 @@ Accept: text/event-stream
     "session_id": "uuid",
     "service_id": "service-test",
     "subject_id": "sub_xxx",
-    "did": "did:miid:xxx",
+    "did": "did:key:z6MksXxxExampleDidKey",
     "scope": "profile email",
     "expires_at": "..."
   },
@@ -654,7 +654,7 @@ Accept: text/event-stream
     "session_id": "uuid",
     "service_id": "service-test",
     "subject_id": "sub_xxx",
-    "did": "did:miid:xxx"
+    "did": "did:key:z6MksXxxExampleDidKey"
   },
   "at": "..."
 }
@@ -740,7 +740,7 @@ Authorization: Bearer at_xxx
 {
   "service_id": "service-test",
   "subject_id": "sub_xxx",
-  "did": "did:miid:xxx",
+  "did": "did:key:z6MksXxxExampleDidKey",
   "scope": "profile email",
   "requested_claims": ["name", "email", "nickname"],
   "approved_claims": ["name", "email"],
@@ -773,7 +773,7 @@ X-Client-Id: web-client
 X-Client-Secret: dev-service-secret
 
 {
-  "did": "did:miid:xxx",
+  "did": "did:key:z6MksXxxExampleDidKey",
   "scopes": ["profile", "email"]
 }
 ```
@@ -811,7 +811,7 @@ X-Client-Id: web-client
 X-Client-Secret: dev-service-secret
 
 {
-  "did": "did:miid:xxx",
+  "did": "did:key:z6MksXxxExampleDidKey",
   "scopes": ["profile", "email"]
 }
 ```
@@ -842,7 +842,7 @@ Accept: text/event-stream
 #### `connected`
 ```json
 {
-  "did": "did:miid:xxx",
+  "did": "did:key:z6MksXxxExampleDidKey",
   "at": "..."
 }
 ```
@@ -855,7 +855,7 @@ Accept: text/event-stream
   "payload": {
     "challenge_id": "uuid",
     "service_id": "service-test",
-    "did_hint": "did:miid:xxx",
+    "did_hint": "did:key:z6MksXxxExampleDidKey",
     "scopes": ["profile", "email"],
     "requested_claims": ["name", "email", "nickname"],
     "expires_at": "..."
@@ -975,7 +975,7 @@ GET /v1/wallet/challenges?did={did} HTTP/1.1
 **Response (200 OK)**
 ```json
 {
-  "did": "did:miid:xxx",
+  "did": "did:key:z6MksXxxExampleDidKey",
   "challenges": [
     {
       "challenge_id": "uuid",
@@ -983,7 +983,7 @@ GET /v1/wallet/challenges?did={did} HTTP/1.1
       "client_id": "web-client",
       "nonce": "...",
       "scopes": ["profile", "email"],
-      "did_hint": "did:miid:xxx",
+      "did_hint": "did:key:z6MksXxxExampleDidKey",
       "requested_claims": ["name", "email", "nickname"],
       "risk_action": null,
       "expires_at": "..."
@@ -1004,9 +1004,9 @@ POST /v1/wallet/challenges/{challengeId}/approve HTTP/1.1
 Content-Type: application/json
 
 {
-  "did": "did:miid:xxx",
+  "did": "did:key:z6MksXxxExampleDidKey",
   "signature": "base64url_ed25519_signature",
-  "wallet_url": "http://localhost:17000",
+  "wallet_url": "http://localhost:17000",  // optional: profile 조회용 힌트 (서명 검증에는 사용되지 않음)
   "approved_claims": ["name", "email"]
 }
 ```
@@ -1057,7 +1057,7 @@ POST /v1/wallet/challenges/{challengeId}/deny HTTP/1.1
 Content-Type: application/json
 
 {
-  "did": "did:miid:xxx"
+  "did": "did:key:z6MksXxxExampleDidKey"
 }
 ```
 
@@ -1082,7 +1082,7 @@ GET /v1/wallet/sessions?did={did} HTTP/1.1
 ```
 
 {
-  "did": "did:miid:xxx",
+  "did": "did:key:z6MksXxxExampleDidKey",
   "active_services": [
     {
       "active_service_id": "uuid",
@@ -1115,7 +1115,7 @@ DELETE /v1/wallet/sessions/{sessionId} HTTP/1.1
 Content-Type: application/json
 
 {
-  "did": "did:miid:xxx"
+  "did": "did:key:z6MksXxxExampleDidKey"
 }
 ```
 
@@ -1142,7 +1142,7 @@ GET /v1/wallet/approved?did={did} HTTP/1.1
 **Response (200 OK)**
 ```json
 {
-  "did": "did:miid:xxx",
+  "did": "did:key:z6MksXxxExampleDidKey",
   "approved": [
     {
       "authorization_code": "ac_xxx",
@@ -1172,7 +1172,7 @@ DELETE /v1/wallet/approved/{authCode} HTTP/1.1
 Content-Type: application/json
 
 {
-  "did": "did:miid:xxx"
+  "did": "did:key:z6MksXxxExampleDidKey"
 }
 ```
 
@@ -1210,7 +1210,7 @@ Content-Type: application/json
 ```json
 {
   "wallet_id": "uuid",
-  "did": "did:miid:uuid",
+  "did": "did:key:z6MkUuidExampleDidKey",
   "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----",
   "name": "홍길동",
   "email": "user@example.com",
@@ -1230,7 +1230,7 @@ Content-Type: application/json
   "wallets": [
     {
       "wallet_id": "uuid",
-      "did": "did:miid:uuid",
+      "did": "did:key:z6MkUuidExampleDidKey",
       "name": "홍길동",
       "email": "user@example.com",
       "nickname": "길동",
@@ -1257,7 +1257,7 @@ Wallet 상세 정보를 조회합니다.
 ```json
 {
   "wallet_id": "uuid",
-  "did": "did:miid:uuid",
+  "did": "did:key:z6MkUuidExampleDidKey",
   "name": "홍길동",
   "email": "user@example.com",
   "nickname": "길동",
@@ -1269,14 +1269,14 @@ Wallet 상세 정보를 조회합니다.
 
 ### 6.4 GET /v1/wallets/by-did/:did
 
-DID로 Wallet을 조회합니다. (Gateway DID Resolution에 사용)
+DID로 Wallet을 조회합니다. (프로필/표시 정보 조회에 사용)
 
 **Response (200 OK)**
 ```json
 {
   "wallet_id": "uuid",
-  "did": "did:miid:uuid",
-  "kid": "did:miid:uuid#key-1",
+  "did": "did:key:z6MkUuidExampleDidKey",
+  "kid": "did:key:z6MkUuidExampleDidKey#z6MkUuidExampleDidKey",
   "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----",
   "name": "홍길동",
   "email": "user@example.com",
@@ -1319,7 +1319,7 @@ Content-Type: application/json
 ```json
 {
   "wallet_id": "uuid",
-  "did": "did:miid:uuid",
+  "did": "did:key:z6MkUuidExampleDidKey",
   "name": "홍길동",
   "email": "new@example.com",
   "nickname": "길동이",
@@ -1352,7 +1352,7 @@ Content-Type: application/json
 X-Wallet-Sign-Secret: {secret}
 
 {
-  "did": "did:miid:xxx",
+  "did": "did:key:z6MksXxxExampleDidKey",
   "challenge_id": "uuid",
   "nonce": "...",
   "audience": "web-client",
@@ -1363,8 +1363,8 @@ X-Wallet-Sign-Secret: {secret}
 **Response (200 OK)**
 ```json
 {
-  "did": "did:miid:xxx",
-  "kid": "did:miid:xxx#key-1",
+  "did": "did:key:z6MksXxxExampleDidKey",
+  "kid": "did:key:z6MksXxxExampleDidKey#z6MksXxxExampleDidKey",
   "signature": "base64url_ed25519_signature",
   "signed_payload": {
     "challenge_id": "uuid",
@@ -1393,7 +1393,7 @@ Wallet을 삭제합니다.
 ```json
 {
   "deleted": true,
-  "did": "did:miid:xxx",
+  "did": "did:key:z6MksXxxExampleDidKey",
   "wallet_id": "uuid"
 }
 ```
@@ -1420,18 +1420,19 @@ Wallet을 삭제합니다.
 ### 7.1 DID Format
 
 ```
-did:miid:{wallet_id}
+did:key:{multibase_base58btc(multicodec_ed25519_pub + public_key_bytes)}
 ```
 
-- `wallet_id`: UUID v4 format
+- `did:key`는 DID 자체에 공개키 fingerprint를 포함합니다.
+- 외부 `wallet_url` 조회 없이 DID만으로 검증키를 도출할 수 있습니다.
 
 ### 7.2 Key ID (kid) Format
 
 ```
-{did}#key-1
+{did}#{fingerprint}
 ```
 
-예: `did:miid:550e8400-e29b-41d4-a716-446655440000#key-1`
+예: `did:key:z6Mkf5rGMoatrSj1f4CyvuHBeXJELe9RPdzo2PKGNCKVtZxP#z6Mkf5rGMoatrSj1f4CyvuHBeXJELe9RPdzo2PKGNCKVtZxP`
 
 ### 7.3 Signature Algorithm
 
