@@ -64,6 +64,7 @@ let tray = null;
 let win = null;
 let walletServer = null;
 const eventSources = new Map();
+const eventReconnectTimers = new Map();
 let wallets = [];
 let primaryDid = process.env.WALLET_DID || null;
 let claimPolicies = {};
@@ -615,6 +616,39 @@ async function approveChallenge(challengeId, did, approvedClaims = null) {
   return response;
 }
 
+async function issueWalletEventsConnectionToken(did) {
+  const proof = {
+    challenge_id: `wallet-events:${Date.now()}`,
+    nonce: cryptoRandomSecret().slice(0, 24),
+    audience: "wallet_events",
+    expires_at: new Date(Date.now() + 60000).toISOString()
+  };
+  const sign = await fetchJson(`${WALLET_URL}/v1/wallets/sign`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-wallet-sign-secret": walletSignSecret
+    },
+    body: JSON.stringify({
+      did,
+      challenge_id: proof.challenge_id,
+      nonce: proof.nonce,
+      audience: proof.audience,
+      expires_at: proof.expires_at
+    })
+  });
+  const issued = await fetchJson(`${GATEWAY_URL}/v1/wallet/events/token`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      did,
+      signature: sign.signature,
+      proof
+    })
+  });
+  return issued.connection_token;
+}
+
 
 function openWindow() {
   if (!win) {
@@ -761,6 +795,8 @@ async function handleWalletEvent(data, _sourceDid) {
 }
 
 function closeEventStreams() {
+  eventReconnectTimers.forEach((timer) => clearTimeout(timer));
+  eventReconnectTimers.clear();
   eventSources.forEach((es) => {
     try {
       es.close();
@@ -771,12 +807,33 @@ function closeEventStreams() {
   eventSources.clear();
 }
 
-function connectEventStreams() {
-  closeEventStreams();
-  const dids = getWalletDids();
-  dids.forEach((did) => {
+function scheduleWalletEventReconnect(did, delayMs = 2000) {
+  if (eventReconnectTimers.has(did)) {
+    clearTimeout(eventReconnectTimers.get(did));
+  }
+  const timer = setTimeout(() => {
+    eventReconnectTimers.delete(did);
+    connectEventStreamForDid(did);
+  }, delayMs);
+  eventReconnectTimers.set(did, timer);
+}
+
+async function connectEventStreamForDid(did) {
+  try {
+    const prev = eventSources.get(did);
+    if (prev) {
+      try {
+        prev.close();
+      } catch (_err) {
+        // ignore
+      }
+      eventSources.delete(did);
+    }
+    const token = await issueWalletEventsConnectionToken(did);
     dlog(`connect wallet event stream did=${did}`);
-    const es = new EventSource(`${GATEWAY_URL}/v1/wallet/events?did=${encodeURIComponent(did)}`);
+    const es = new EventSource(
+      `${GATEWAY_URL}/v1/wallet/events?did=${encodeURIComponent(did)}&token=${encodeURIComponent(token)}`
+    );
     const forward = async (event) => {
       try {
         const data = JSON.parse(event.data);
@@ -795,9 +852,27 @@ function connectEventStreams() {
     es.addEventListener("session_revoked", forward);
     es.addEventListener("approved_cancelled", forward);
     es.onerror = () => {
-      dlog(`wallet event stream error did=${did} (auto-retry)`);
+      dlog(`wallet event stream error did=${did} (reconnect with new token)`);
+      try {
+        es.close();
+      } catch (_err) {
+        // ignore
+      }
+      eventSources.delete(did);
+      scheduleWalletEventReconnect(did);
     };
     eventSources.set(did, es);
+  } catch (err) {
+    dlog(`wallet event token issue failed did=${did} err=${err.message}`);
+    scheduleWalletEventReconnect(did, 3000);
+  }
+}
+
+function connectEventStreams() {
+  closeEventStreams();
+  const dids = getWalletDids();
+  dids.forEach((did) => {
+    connectEventStreamForDid(did);
   });
 }
 

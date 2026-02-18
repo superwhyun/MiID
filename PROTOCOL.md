@@ -769,9 +769,11 @@ Wallet이 DID별로 이벤트를 수신합니다.
 
 **Request**
 ```http
-GET /v1/wallet/events?did={did} HTTP/1.1
+GET /v1/wallet/events?did={did}&token={connection_token} HTTP/1.1
 Accept: text/event-stream
 ```
+
+- `token`은 `/v1/wallet/events/token`에서 발급한 짧은 수명 연결 토큰입니다.
 
 **Events**
 
@@ -882,6 +884,48 @@ Challenge 만료
 ```
 
 ## 5. Wallet → Gateway (API)
+
+### 5.0 POST /v1/wallet/events/token
+
+Wallet SSE 연결용 토큰을 발급합니다.
+
+**Request**
+```http
+POST /v1/wallet/events/token HTTP/1.1
+Content-Type: application/json
+
+{
+  "did": "did:key:z6MksXxxExampleDidKey",
+  "signature": "base64url_ed25519_signature",
+  "proof": {
+    "challenge_id": "wallet-events:1700000000000",
+    "nonce": "random_string",
+    "audience": "wallet_events",
+    "expires_at": "2024-01-01T12:00:00.000Z"
+  }
+}
+```
+
+**Response (200 OK)**
+```json
+{
+  "did": "did:key:z6MksXxxExampleDidKey",
+  "connection_token": "base64url.payload.base64url.signature",
+  "expires_at": "2024-01-01T12:00:30.000Z"
+}
+```
+
+**Error Responses**
+
+| Status | Error Code | 설명 |
+|--------|------------|------|
+| 400 | `invalid_request` | 필수 파라미터 누락 |
+| 400 | `invalid_proof_payload` | proof 형식 오류 |
+| 400 | `invalid_proof_audience` | audience 불일치 |
+| 401 | `proof_expired` | proof 만료 |
+| 401 | `invalid_signature` | DID 서명 검증 실패 |
+
+---
 
 ### 5.1 GET /v1/wallet/challenges
 

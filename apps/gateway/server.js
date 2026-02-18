@@ -14,6 +14,8 @@ const DATA_DIR = path.join(__dirname, "..", "..", "data");
 const SERVICES_FILE = path.join(DATA_DIR, "services.json");
 const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
 const REQUIRE_LOCAL_WALLET_READY = process.env.LOCAL_WALLET_REQUIRED !== "0";
+const WALLET_EVENTS_TOKEN_TTL_SECONDS = Math.max(10, Number(process.env.WALLET_EVENTS_TOKEN_TTL_SECONDS || 60));
+const WALLET_EVENTS_TOKEN_SECRET = process.env.WALLET_EVENTS_TOKEN_SECRET || crypto.randomBytes(32).toString("hex");
 
 let SERVICE_REGISTRY = new Map();
 
@@ -143,6 +145,63 @@ function getServiceNameByServiceId(serviceId) {
 
 function toPayloadString(payload) {
   return JSON.stringify(payload);
+}
+
+function base64UrlEncodeJson(value) {
+  return Buffer.from(JSON.stringify(value)).toString("base64url");
+}
+
+function signWalletEventsToken(payloadBase64Url) {
+  return crypto
+    .createHmac("sha256", WALLET_EVENTS_TOKEN_SECRET)
+    .update(payloadBase64Url)
+    .digest("base64url");
+}
+
+function issueWalletEventsConnectionToken(did) {
+  const nowMs = Date.now();
+  const expiresAtMs = nowMs + (WALLET_EVENTS_TOKEN_TTL_SECONDS * 1000);
+  const payload = {
+    did,
+    purpose: "wallet_events",
+    iat: Math.floor(nowMs / 1000),
+    exp: Math.floor(expiresAtMs / 1000)
+  };
+  const encodedPayload = base64UrlEncodeJson(payload);
+  const signature = signWalletEventsToken(encodedPayload);
+  return {
+    token: `${encodedPayload}.${signature}`,
+    expiresAt: new Date(expiresAtMs).toISOString()
+  };
+}
+
+function verifyWalletEventsConnectionToken(token, did) {
+  if (!token || typeof token !== "string" || !token.includes(".")) {
+    throw new Error("invalid_connection_token");
+  }
+  const [encodedPayload, signature] = token.split(".");
+  if (!encodedPayload || !signature) {
+    throw new Error("invalid_connection_token");
+  }
+  const expected = signWalletEventsToken(encodedPayload);
+  const expectedBuf = Buffer.from(expected);
+  const actualBuf = Buffer.from(signature);
+  if (expectedBuf.length !== actualBuf.length || !crypto.timingSafeEqual(expectedBuf, actualBuf)) {
+    throw new Error("invalid_connection_token");
+  }
+  const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (
+    payload?.purpose !== "wallet_events" ||
+    typeof payload?.did !== "string" ||
+    typeof payload?.exp !== "number" ||
+    payload.exp <= nowSec
+  ) {
+    throw new Error("invalid_connection_token");
+  }
+  if (payload.did !== did) {
+    throw new Error("connection_token_did_mismatch");
+  }
 }
 
 function parseScopeText(scopeText) {
@@ -622,8 +681,17 @@ app.delete("/v1/services/:clientId", (req, res) => {
 
 app.get("/v1/wallet/events", (req, res) => {
   const did = req.query.did;
+  const token = req.query.token;
   if (!did) {
     return res.status(400).json({ error: "did_required" });
+  }
+  if (!token) {
+    return res.status(401).json({ error: "connection_token_required" });
+  }
+  try {
+    verifyWalletEventsConnectionToken(token, did);
+  } catch (err) {
+    return res.status(401).json({ error: err.message || "invalid_connection_token" });
   }
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
@@ -641,6 +709,50 @@ app.get("/v1/wallet/events", (req, res) => {
     removeWalletStream(did, res);
     dlog(`wallet events disconnected did=${did}`);
   });
+});
+
+app.post("/v1/wallet/events/token", async (req, res) => {
+  try {
+    const { did, signature, proof } = req.body || {};
+    if (!did || !signature || !proof || typeof proof !== "object") {
+      return res.status(400).json({ error: "invalid_request" });
+    }
+    const challengeId = proof.challenge_id;
+    const nonce = proof.nonce;
+    const audience = proof.audience;
+    const expiresAt = proof.expires_at;
+    if (!challengeId || !nonce || !audience || !expiresAt) {
+      return res.status(400).json({ error: "invalid_proof_payload" });
+    }
+    if (audience !== "wallet_events") {
+      return res.status(400).json({ error: "invalid_proof_audience" });
+    }
+    const proofExpiry = new Date(expiresAt).getTime();
+    if (!Number.isFinite(proofExpiry) || proofExpiry <= Date.now()) {
+      return res.status(401).json({ error: "proof_expired" });
+    }
+
+    const resolved = await resolveDidDocument({ did });
+    const payload = toPayloadString({
+      challenge_id: challengeId,
+      nonce,
+      audience,
+      expires_at: expiresAt
+    });
+    const ok = verifyWithDidDocument(resolved.didDocument, payload, signature);
+    if (!ok) {
+      return res.status(401).json({ error: "invalid_signature" });
+    }
+
+    const issued = issueWalletEventsConnectionToken(did);
+    return res.json({
+      did,
+      connection_token: issued.token,
+      expires_at: issued.expiresAt
+    });
+  } catch (err) {
+    return res.status(500).json({ error: "token_issue_failed", message: err.message });
+  }
 });
 
 app.get("/v1/service/events", (req, res) => {
