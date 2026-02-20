@@ -994,13 +994,9 @@ function broadcastWalletsChanged() {
 }
 
 function createTrayIcon() {
-  const svg = `
-<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18">
-  <path fill="black" d="M9 1.5l6 3v4.8c0 3.7-2.1 6.1-6 7.2-3.9-1.1-6-3.5-6-7.2V4.5l6-3z"/>
-  <circle cx="9" cy="8" r="2.2" fill="white"/>
-</svg>`.trim();
-  const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
-  const icon = nativeImage.createFromDataURL(dataUrl);
+  // nativeImage.createFromDataURL은 SVG를 지원하지 않으므로 PNG 버퍼 사용
+  const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAAAMUlEQVR4nGNgGMzgP5kYq0HkWE6yiwbGIFIBWS6iamBT1SB0Q4eRQYMnZZOSUIcTAAB0elmncdD6uQAAAABJRU5ErkJggg==";
+  const icon = nativeImage.createFromBuffer(Buffer.from(pngBase64, "base64"));
   icon.setTemplateImage(true);
   return icon;
 }

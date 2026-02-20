@@ -6,6 +6,7 @@
   "main": "apps/wallet/main.js",
   "scripts": {
     "dev": "concurrently -n wallet,gateway,service -c blue,green,yellow \"npm run dev:wallet\" \"npm run dev:gateway\" \"npm run dev:service\"",
+    "dev:servers": "concurrently -n gateway,service -c green,yellow \"npm run dev:gateway\" \"npm run dev:service\"",
     "dev:wallet": "DEBUG_AUTH=1 electron apps/wallet/main.js",
     "dev:gateway": "DEBUG_AUTH=1 node apps/gateway/server.js",
     "dev:service": "DEBUG_AUTH=1 node scripts/dev-service.js",
@@ -17,7 +18,7 @@
     "test:approval": "bash scripts/test-approval.sh",
     "test:e2e": "npm run -s test:approval && npm run -s test:finalize",
     "test:all": "node tests/run-all-tests.js",
-    "build:mac": "electron-packager . MiID --platform=darwin --arch=arm64 --overwrite --out=dist --app-bundle-id=com.miid.desktop --app-version=0.1.0 --prune=true --ignore='^/(data|docs|api|db|\\.agent|\\.serena|dist)'"
+    "build:mac": "electron-packager . MiID --platform=darwin --arch=arm64 --overwrite --out=dist --app-bundle-id=com.miid.desktop --app-version=0.1.0 --prune=true --extend-info=config/mac-extend-info.plist --ignore='^/(data|docs|api|db|\\.agent|\\.serena|dist)'"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",
